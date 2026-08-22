@@ -1,0 +1,76 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "contextmesh"
+version = "0.1.0"
+description = "Intelligent context layer for Claude Code — infinite session memory, minimal active context"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Gajanan Rathod" }]
+
+dependencies = [
+    # Web framework & async
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "httpx>=0.27.0",
+
+    # Async SQLite
+    "aiosqlite>=0.20.0",
+
+    # Graph
+    "networkx>=3.4.0",
+
+    # Code parsing (Tree-sitter)
+    "tree-sitter>=0.23.0",
+    "tree-sitter-language-pack>=0.7.0",
+
+    # Embeddings (local, no external API)
+    "sentence-transformers>=3.3.0",
+    "numpy>=1.26.0",
+
+    # Token counting
+    "tiktoken>=0.8.0",
+
+    # MCP server
+    "fastmcp>=2.0.0",
+
+    # Data models
+    "pydantic>=2.9.0",
+
+    # Config
+    "tomli>=2.0.0; python_version < '3.11'",
+    "tomli-w>=1.0.0",
+
+    # CLI & display
+    "rich>=13.9.0",
+    "click>=8.1.0",
+
+    # Utilities
+    "scikit-learn>=1.5.0",
+    "python-dateutil>=2.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.7.0",
+    "mypy>=1.13.0",
+]
+
+[project.scripts]
+contextmesh = "contextmesh.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/contextmesh"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
