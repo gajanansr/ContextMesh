@@ -20,60 +20,40 @@ Claude Code Hooks → ContextMesh Daemon → Session Graph + Repo Graph
 
 ## Installation
 
-```bash
-# Clone and install
-git clone https://github.com/you/ContextMesh
-cd ContextMesh
-pip install -e .
-
-# Run the install script (sets up hooks + config)
-bash scripts/install.sh
-
-# Index your project's codebase
-contextmesh index /path/to/your/project
-
-# Start the daemon
-contextmesh start
-
-# Start the MCP server (in a separate terminal)
-contextmesh mcp
-```
-
-### For exact token measurement (Claude Enterprise)
+The easiest way to install ContextMesh globally is using `pipx`.
 
 ```bash
-# Start the token proxy
-contextmesh proxy
+# 1. Install globally
+pipx install claude-contextmesh
 
-# Then set in your environment:
-export ANTHROPIC_BASE_URL=http://localhost:8099
-
-# This records EXACT token counts from actual API responses
-# including cache_creation_input_tokens and cache_read_input_tokens
+# 2. Register as a macOS background service (runs silently on boot)
+contextmesh install-mac
 ```
 
-## Adding ContextMesh to a project
+## Setup a new project
 
-Copy `CLAUDE.md` from this repo to your project root. Claude Code will automatically instruct Claude to use the `get_context` tool at the start of each response.
+When you start working on a new repository, just run:
 
 ```bash
-cp /path/to/ContextMesh/CLAUDE.md /path/to/your/project/CLAUDE.md
+cd /path/to/your/project
+contextmesh init
 ```
+*This instantly connects Claude Code to the MCP server, indexes your codebase for the repo graph, and configures the hooks.*
 
-## Register MCP server with Claude Code
+## Using ContextMesh
 
-Add to `~/.claude/settings.json`:
+You have two options for running Claude Code with ContextMesh:
 
-```json
-{
-  "mcpServers": {
-    "contextmesh": {
-      "command": "contextmesh",
-      "args": ["mcp"]
-    }
-  }
-}
+### Option A: Standard usage
+Just run `claude` normally. Claude will automatically query ContextMesh for relevant memory and codebase context using the MCP server.
+
+### Option B: Token Proxy mode (Recommended for Enterprise)
+If you want to measure *exact* token savings and cost reductions on your Anthropic bill, use our wrapper command instead:
+```bash
+claude-mesh
 ```
+*This acts exactly like Claude Code, but silently routes traffic through the local ContextMesh proxy to measure cache hits and real token usage.*
+
 
 ## View token savings
 
