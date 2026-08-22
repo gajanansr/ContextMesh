@@ -212,6 +212,47 @@ def index(path: str) -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# install-mac
+# ──────────────────────────────────────────────────────────────────────────────
+
+@main.command()
+def install_mac() -> None:
+    """Register ContextMesh to start automatically on macOS boot."""
+    from contextmesh.installer import install_macos_launch_agent, setup_claude_hooks
+    console.print("[bold]Installing ContextMesh as a background service...[/bold]")
+    install_macos_launch_agent()
+    setup_claude_hooks()
+    console.print("\n[bold green]Installation complete![/bold green]")
+    console.print("The daemon is now running in the background. You never have to manually run `contextmesh start` again.")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# init
+# ──────────────────────────────────────────────────────────────────────────────
+
+@main.command()
+def init() -> None:
+    """1-Click setup for a new repository."""
+    import os
+    import subprocess
+    from contextmesh.installer import setup_mcp_for_project
+    
+    project_path = Path.cwd()
+    console.print(f"[bold]Initializing ContextMesh for {project_path.name}...[/bold]")
+    
+    # 1. Connect MCP
+    setup_mcp_for_project(str(project_path))
+    
+    # 2. Index the codebase
+    console.print("\n[yellow]Scanning codebase...[/yellow]")
+    # Call the index command logic via subprocess
+    try:
+        subprocess.run(["contextmesh", "index", "."], check=True)
+    except Exception as e:
+        console.print(f"[red]Failed to index codebase: {e}[/red]")
+        
+    console.print("\n[bold green]Ready![/bold green] Just run `claude` or `claude-mesh` to begin.")
+
+# ──────────────────────────────────────────────────────────────────────────────
 # status
 # ──────────────────────────────────────────────────────────────────────────────
 
