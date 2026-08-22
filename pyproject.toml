@@ -63,6 +63,8 @@ dev = [
 
 [project.scripts]
 contextmesh = "contextmesh.cli:main"
+claude-mesh = "contextmesh.wrapper:main"
+
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/contextmesh"]
