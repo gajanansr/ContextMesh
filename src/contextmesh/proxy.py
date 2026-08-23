@@ -86,7 +86,14 @@ async def proxy(path: str, request: Request):
     except Exception as e:
         logger.error(f"Proxy error: {e}")
         await client.aclose()
-        return Response(content=f"Bad Gateway: {str(e)}", status_code=502)
+        error_json = {
+            "type": "error",
+            "error": {
+                "type": "api_error",
+                "message": f"ContextMesh Proxy Error: {str(e)}"
+            }
+        }
+        return Response(content=json.dumps(error_json), status_code=502, media_type="application/json")
 
 if __name__ == '__main__':
     import uvicorn
