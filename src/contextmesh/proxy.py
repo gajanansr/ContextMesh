@@ -1,73 +1,84 @@
-import uuid
-from datetime import datetime, timezone
-from fastapi import FastAPI, Request, Response, BackgroundTasks
+import json
+import logging
 import httpx
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse, Response
+
+logger = logging.getLogger(__name__)
 
 proxy_app = FastAPI(title='ContextMesh Token Proxy')
 
-class TokenProxy:
-    async def proxy_request(self, request: Request) -> Response:
-        url = request.url.path
-        if request.url.query:
-            url += f"?{request.url.query}"
-            
-        client = httpx.AsyncClient(base_url="https://api.anthropic.com")
-        
-        headers = dict(request.headers)
-        headers.pop('host', None)
-        headers.pop('content-length', None)
-        
-        body = await request.body()
-        
-        try:
-            req = client.build_request(
-                method=request.method,
-                url=url,
-                headers=headers,
-                content=body
-            )
-            resp = await client.send(req, stream=True)
-            
-            # Streaming the response back and recording tokens
-            # For simplicity in this implementation, we buffer the full response
-            # A true streaming proxy would yield chunks while parsing SSE
-            content = await resp.aread()
-            
-            # Simple heuristic for JSON vs SSE
-            try:
-                data = json.loads(content)
-                if 'usage' in data:
+async def track_usage(chunk: bytes):
+    """Sniff the SSE stream for token usage without breaking the stream."""
+    try:
+        text = chunk.decode('utf-8', errors='ignore')
+        for line in text.splitlines():
+            if line.startswith('data: '):
+                data = json.loads(line[6:])
+                if 'usage' in data and data['type'] in ('message_start', 'message_delta'):
                     usage = data['usage']
-                    input_toks = usage.get('input_tokens', 0)
-                    output_toks = usage.get('output_tokens', 0)
-                    cache_read = usage.get('cache_read_input_tokens', 0)
-                    cache_create = usage.get('cache_creation_input_tokens', 0)
-                    
-                    # Store in DB (mocked or background task)
-                    print(f"[Proxy] Usage: {input_toks} in, {output_toks} out")
-            except:
-                pass
-            
-            return Response(content=content, status_code=resp.status_code, headers=dict(resp.headers))
-            
-        except Exception as e:
-            print(f"Proxy error: {e}")
-            return Response(content=str(e), status_code=502)
+                    logger.warning(f"[Proxy] Captured Usage: {usage}")
+                    # In a full implementation, we'd write this to SQLite here
+    except Exception:
+        pass
 
-    async def get_stats(self) -> dict:
-        return {"status": "ok", "message": "Stats endpoint"}
-
-proxy_handler = TokenProxy()
 
 @proxy_app.api_route('/{path:path}', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
 async def proxy(path: str, request: Request):
-    if path == "proxy/stats":
-        return await proxy_handler.get_stats()
-    return await proxy_handler.proxy_request(request)
+    url = f"https://api.anthropic.com/{path}"
+    if request.url.query:
+        url += f"?{request.url.query}"
+        
+    client = httpx.AsyncClient(timeout=180.0)
+    
+    headers = dict(request.headers)
+    headers.pop('host', None)
+    headers.pop('content-length', None)
+    
+    # Crucial: Remove accept-encoding to prevent double-compression issues
+    # and to ensure we can sniff the raw JSON chunks for token counts
+    headers.pop('accept-encoding', None)
+    
+    body = await request.body()
+    
+    req = client.build_request(
+        method=request.method,
+        url=url,
+        headers=headers,
+        content=body
+    )
+    
+    try:
+        # Use stream=True to support Claude's real-time streaming
+        resp = await client.send(req, stream=True)
+        
+        # Strip out any headers that would confuse Claude Code
+        resp_headers = dict(resp.headers)
+        resp_headers.pop('content-encoding', None)
+        resp_headers.pop('content-length', None)
+        
+        async def stream_generator():
+            try:
+                async for chunk in resp.aiter_bytes():
+                    # Sniff the chunk for token usage stats
+                    if b'"usage"' in chunk:
+                        await track_usage(chunk)
+                    yield chunk
+            except Exception as e:
+                logger.error(f"Stream error: {e}")
+            finally:
+                await resp.aclose()
+                await client.aclose()
 
-@proxy_app.get('/proxy/stats')
-async def stats():
-    return await proxy_handler.get_stats()
+        return StreamingResponse(
+            stream_generator(),
+            status_code=resp.status_code,
+            headers=resp_headers
+        )
+    except Exception as e:
+        logger.error(f"Proxy error: {e}")
+        await client.aclose()
+        return Response(content=f"Bad Gateway: {str(e)}", status_code=502)
 
 if __name__ == '__main__':
     import uvicorn
