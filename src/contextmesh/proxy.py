@@ -31,7 +31,7 @@ async def proxy(path: str, request: Request):
         
     client = httpx.AsyncClient(timeout=180.0)
     
-    headers = dict(request.headers)
+    headers = {k.lower(): v for k, v in request.headers.items()}
     headers.pop('host', None)
     headers.pop('content-length', None)
     
@@ -53,17 +53,25 @@ async def proxy(path: str, request: Request):
         resp = await client.send(req, stream=True)
         
         # Strip out any headers that would confuse Claude Code
-        resp_headers = dict(resp.headers)
+        resp_headers = {k.lower(): v for k, v in resp.headers.items()}
         resp_headers.pop('content-encoding', None)
         resp_headers.pop('content-length', None)
+        resp_headers.pop('transfer-encoding', None)
+        
+        # Set content-encoding to gzip so Claude Code correctly decompresses it
+        resp_headers['content-encoding'] = 'gzip'
         
         async def stream_generator():
+            import zlib
+            compressor = zlib.compressobj(wbits=16 + zlib.MAX_WBITS)
             try:
                 async for chunk in resp.aiter_bytes():
-                    # Sniff the chunk for token usage stats
                     if b'"usage"' in chunk:
                         await track_usage(chunk)
-                    yield chunk
+                    compressed = compressor.compress(chunk)
+                    if compressed:
+                        yield compressed
+                yield compressor.flush()
             except Exception as e:
                 logger.error(f"Stream error: {e}")
             finally:
