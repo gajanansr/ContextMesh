@@ -17,14 +17,20 @@ def main():
     # Auto-start proxy if it's not running
     if not is_proxy_running():
         print("Starting ContextMesh token proxy on port 8099...")
-        # Start proxy in background
-        proxy_process = subprocess.Popen(
-            ["contextmesh", "proxy"], 
-            stdout=subprocess.DEVNULL, 
-            stderr=subprocess.DEVNULL
-        )
-        # Give it a second to boot up
-        time.sleep(1.5)
+        log_file = os.path.expanduser("~/.contextmesh/proxy.log")
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        
+        with open(log_file, "a") as f:
+            proxy_process = subprocess.Popen(
+                ["contextmesh", "proxy"], 
+                stdout=f, 
+                stderr=f
+            )
+        # Poll until proxy is up, up to 5 seconds
+        for _ in range(20):
+            if is_proxy_running():
+                break
+            time.sleep(0.25)
         
         if not is_proxy_running():
             print("Error: Failed to start the token proxy. Check `contextmesh proxy` logs.")
