@@ -3,10 +3,18 @@ import logging
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, Response
+from contextmesh.store.db import init_db
+from contextmesh.config import get_config
 
 logger = logging.getLogger(__name__)
 
 proxy_app = FastAPI(title='ContextMesh Token Proxy')
+
+@proxy_app.on_event("startup")
+async def startup_event():
+    config = get_config()
+    db_path = config.data_dir / "contextmesh.db"
+    await init_db(db_path)
 
 async def track_usage(chunk: bytes):
     """Sniff the SSE stream for token usage without breaking the stream."""
@@ -18,7 +26,34 @@ async def track_usage(chunk: bytes):
                 if 'usage' in data and data['type'] in ('message_start', 'message_delta'):
                     usage = data['usage']
                     logger.warning(f"[Proxy] Captured Usage: {usage}")
-                    # In a full implementation, we'd write this to SQLite here
+                    
+                    # Store in DB
+                    try:
+                        from contextmesh.store.db import get_db
+                        import uuid
+                        db = get_db()
+                        turn_id = f"proxy_{uuid.uuid4().hex[:8]}"
+                        # We don't have the session_id or accumulated tokens from just the proxy
+                        # But we can log it with a dummy session ID for global reporting
+                        # or infer from process? For now just log it under a 'proxy_session'
+                        # In a true integration, we'd extract x-claude-session-id or correlate
+                        # by timestamp.
+                        # For now, let's just insert a simple row so stats aren't 0.
+                        input_tok = usage.get('input_tokens', 0)
+                        out_tok = usage.get('output_tokens', 0)
+                        await db.execute(
+                            """
+                            INSERT INTO token_savings 
+                            (turn_id, session_id, timestamp, accumulated_session_tokens, 
+                             routed_tokens, mcp_overhead_tokens, tokens_saved, net_tokens_saved,
+                             hot_tokens, warm_tokens, cold_tokens, repo_tokens, input_price_per_mtok)
+                            VALUES (?, 'proxy_session', datetime('now'), ?, ?, 0, 0, 0, 0, 0, 0, 0, 3.0)
+                            """,
+                            (turn_id, input_tok, input_tok)
+                        )
+                        await db.commit()
+                    except Exception as db_e:
+                        logger.error(f"DB Error: {db_e}")
     except Exception:
         pass
 
