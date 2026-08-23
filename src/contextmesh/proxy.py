@@ -45,9 +45,9 @@ async def track_usage(chunk: bytes):
                             """
                             INSERT INTO token_savings 
                             (turn_id, session_id, timestamp, accumulated_session_tokens, 
-                             routed_tokens, mcp_overhead_tokens, tokens_saved, net_tokens_saved,
-                             hot_tokens, warm_tokens, cold_tokens, repo_tokens, input_price_per_mtok)
-                            VALUES (?, 'proxy_session', datetime('now'), ?, ?, 0, 0, 0, 0, 0, 0, 0, 3.0)
+                             routed_tokens, mcp_overhead_tokens, hot_tokens, warm_tokens, 
+                             cold_tokens, repo_tokens, input_price_per_mtok)
+                            VALUES (?, 'proxy_session', datetime('now'), ?, ?, 0, 0, 0, 0, 0, 3.0)
                             """,
                             (turn_id, input_tok, input_tok)
                         )
