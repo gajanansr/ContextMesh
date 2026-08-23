@@ -79,13 +79,13 @@ def proxy(host: str, port: int) -> None:
     Start the token measurement proxy.
 
     \b
-    Set ANTHROPIC_BASE_URL=http://localhost:8099 in your environment
+    Set ANTHROPIC_BASE_URL=http://127.0.0.1:8099 in your environment
     so Claude Code routes API calls through this proxy. The proxy
     records exact token counts (including cache hits) from real API
     responses into the SQLite database.
     """
     console.print(f"[bold green]Token proxy[/bold green] on {host}:{port}")
-    console.print("Set: [yellow]export ANTHROPIC_BASE_URL=http://localhost:8099[/yellow]")
+    console.print("Set: [yellow]export ANTHROPIC_BASE_URL=http://127.0.0.1:8099[/yellow]")
     from contextmesh.proxy import proxy_app
     uvicorn.run(proxy_app, host=host, port=port, log_level="warning")
 

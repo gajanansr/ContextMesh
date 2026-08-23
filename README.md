@@ -52,7 +52,7 @@ If you want to measure *exact* token savings and cost reductions on your Anthrop
 ```bash
 claude-mesh
 ```
-*This acts exactly like Claude Code, but silently routes traffic through the local ContextMesh proxy to measure cache hits and real token usage.*
+*(You can also run `contextmesh proxy` manually and set `export ANTHROPIC_BASE_URL=http://127.0.0.1:8099` if you prefer not to use the wrapper).*
 
 
 ## View token savings
