@@ -40,6 +40,85 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(title="ContextMesh Daemon", version="0.1.0", lifespan=lifespan)
 
+    from fastapi.responses import HTMLResponse
+
+    @app.get("/dashboard")
+    async def dashboard():
+        """Serve a beautiful Web UI for token savings."""
+        html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>ContextMesh Dashboard</title>
+            <style>
+                body { font-family: -apple-system, system-ui, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 40px; }
+                .container { max-width: 1000px; margin: 0 auto; }
+                h1 { font-size: 2.5rem; background: linear-gradient(to right, #38bdf8, #818cf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+                .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-top: 30px; }
+                .card { background: #1e293b; padding: 25px; border-radius: 12px; border: 1px solid #334155; }
+                .card h3 { margin: 0 0 10px 0; color: #94a3b8; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 1px; }
+                .card .value { font-size: 2.5rem; font-weight: bold; color: #f8fafc; }
+                .card .value.green { color: #4ade80; }
+                .log-section { margin-top: 40px; background: #1e293b; padding: 25px; border-radius: 12px; border: 1px solid #334155; }
+                pre { background: #0f172a; padding: 15px; border-radius: 8px; color: #a78bfa; overflow-x: auto; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>ContextMesh V2</h1>
+                <p style="color: #cbd5e1;">Live Token Compression & Savings Dashboard</p>
+                
+                <div class="grid">
+                    <div class="card">
+                        <h3>Tokens Sent (Raw)</h3>
+                        <div class="value" id="raw-tokens">--</div>
+                    </div>
+                    <div class="card">
+                        <h3>Tokens Sent (Compressed)</h3>
+                        <div class="value" id="routed-tokens">--</div>
+                    </div>
+                    <div class="card">
+                        <h3>Tokens Saved</h3>
+                        <div class="value green" id="saved-tokens">--</div>
+                    </div>
+                    <div class="card">
+                        <h3>Est. Cost Saved</h3>
+                        <div class="value green" id="cost-saved">$--</div>
+                    </div>
+                </div>
+
+                <div class="log-section">
+                    <h3>Recent RTK Interceptions</h3>
+                    <pre id="logs">Waiting for Claude Code commands...</pre>
+                </div>
+            </div>
+
+            <script>
+                async function fetchStats() {
+                    try {
+                        const res = await fetch('/savings');
+                        const data = await res.json();
+                        
+                        document.getElementById('raw-tokens').innerText = data.total_accumulated_tokens.toLocaleString();
+                        document.getElementById('routed-tokens').innerText = data.total_routed_tokens.toLocaleString();
+                        document.getElementById('saved-tokens').innerText = data.total_tokens_saved.toLocaleString();
+                        document.getElementById('cost-saved').innerText = '$' + data.total_cost_saved_usd.toFixed(4);
+                        
+                        if (data.total_tokens_saved > 0) {
+                            document.getElementById('logs').innerText = `[ContextMesh RTK] Intercepted outbound payload!\nSuccessfully crushed ${data.total_tokens_saved.toLocaleString()} tokens of unstructured noise.`;
+                        }
+                    } catch (e) {
+                        console.error(e);
+                    }
+                }
+                setInterval(fetchStats, 2000);
+                fetchStats();
+            </script>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html)
+
     @app.post("/hook")
     async def post_hook(event: HookEvent, background_tasks: BackgroundTasks):
         logger.info("Hook event: %s session=%s", event.event_type, event.session_id)

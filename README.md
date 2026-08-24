@@ -16,6 +16,9 @@ Claude Code Hooks → ContextMesh Daemon → Session Graph + Repo Graph
                               Token Savings Tracker → Report
 ```
 
+* **RTK Output Compressor:** Automatically intercepts massive terminal outputs (like `npm install` or massive `grep` commands) and intelligently compresses them down before sending them to Anthropic, saving you up to 90% on useless token noise.
+* **Live Web Dashboard:** Monitor your exact token savings and costs averted in real-time by visiting the local God-Mode dashboard at `http://127.0.0.1:8765/dashboard`.
+
 **The key insight**: semantic similarity alone fails for long coding sessions because everything related to the same feature looks similar. ContextMesh uses graph proximity + code dependency relationships + causal edges + recency + file overlap — not just vectors.
 
 ## Installation
