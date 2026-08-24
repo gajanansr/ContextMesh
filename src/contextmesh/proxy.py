@@ -74,7 +74,15 @@ async def proxy(path: str, request: Request):
     # and to ensure we can sniff the raw JSON chunks for token counts
     headers.pop('accept-encoding', None)
     
-    body = await request.body()
+    raw_body = await request.body()
+    
+    # --- CONTEXTMESH RTK: Compress outbound payload ---
+    from contextmesh.utils.compressor import compress_outbound_payload
+    body = compress_outbound_payload(raw_body)
+    
+    # Update content-length if we changed the body
+    if len(body) != len(raw_body):
+        headers['content-length'] = str(len(body))
     
     req = client.build_request(
         method=request.method,
