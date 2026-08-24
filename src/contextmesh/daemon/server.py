@@ -119,6 +119,33 @@ def create_app() -> FastAPI:
         """
         return HTMLResponse(content=html)
 
+    from pydantic import BaseModel
+    class RepoMapRequest(BaseModel):
+        project_path: str
+
+    @app.post("/repomap")
+    async def get_repomap(req: RepoMapRequest):
+        """Generate and return the AST structural map of the repository."""
+        from contextmesh.graph.repo import get_repo_graph, init_repo_graph
+        from contextmesh.store.db import get_db
+        from contextmesh.graph.repomap import generate_repomap
+        import logging
+        from pathlib import Path
+        
+        logger.info(f"Generating RepoMap for {req.project_path}")
+        
+        try:
+            repo_graph = get_repo_graph()
+        except RuntimeError:
+            repo_graph = init_repo_graph(Path(req.project_path), get_db())
+            
+        # Ensure it's indexed
+        await repo_graph.index_project()
+        
+        # Generate the map
+        map_text = await generate_repomap(req.project_path)
+        return {"repomap": map_text}
+
     @app.post("/hook")
     async def post_hook(event: HookEvent, background_tasks: BackgroundTasks):
         logger.info("Hook event: %s session=%s", event.event_type, event.session_id)

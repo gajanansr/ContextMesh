@@ -26,6 +26,22 @@ def get_context(session_id: str, task_hint: str = '', budget_tokens: int = 15000
         return f"Error retrieving context. Ensure daemon is running at {DAEMON_URL}: {e}"
 
 @mcp.tool()
+def get_project_architecture(project_path: str) -> str:
+    """
+    Get a dense, structural AST map (RepoMap) of the entire codebase.
+    Use this to understand classes, functions, and architecture without reading full files.
+    """
+    try:
+        req = {"project_path": project_path}
+        with httpx.Client() as client:
+            resp = client.post(f"{DAEMON_URL}/repomap", json=req, timeout=30.0)
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("repomap", "Failed to generate repomap.")
+    except Exception as e:
+        return f"Error generating architecture map. Ensure daemon is running: {e}"
+
+@mcp.tool()
 def record_decision(session_id: str, content: str, consequence: str = '', files: str = '', symbols: str = '', confidence: float = 0.9) -> str:
     """Record an architectural decision."""
     try:
