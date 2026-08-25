@@ -1,92 +1,193 @@
 # ContextMesh — Intelligent Context Layer for Claude Code
 
-> One coding session. Infinite memory. Minimal active context.
+> One coding session. Infinite memory. 90% fewer tokens.
 
-ContextMesh sits between Claude Code and the model. It captures every event in your session, builds a structured knowledge graph of your work, and dynamically provides Claude with only the most relevant context for the current task — saving tokens, reducing cost, and preventing context overload.
+ContextMesh is a **transparent AI proxy + memory engine** that sits between Claude Code and the Anthropic API. It automatically compresses token waste, maintains a persistent knowledge graph of your work, and gives Claude perfect memory across sessions — all without changing how you use Claude.
+
+**Just run `contextmesh init` once. Then use `claude` normally forever.**
+
+---
 
 ## How it works
 
 ```
-Claude Code Hooks → ContextMesh Daemon → Session Graph + Repo Graph
-                                               ↓
-                              Context Router (multi-signal scoring)
-                                               ↓
-                              Claude Code ← MCP Server (get_context)
-                                               ↓
-                              Token Savings Tracker → Report
+Your Terminal
+    │
+    ▼
+┌──────────────────────────────────────────┐
+│         ContextMesh Smart Proxy          │  ← Intercepts every request
+│  ┌─────────────────────────────────┐     │
+│  │  RTK Output Compressor          │     │  ← Crushes terminal noise
+│  │  Anti-Context Auto-Flusher      │     │  ← Removes old resolved turns
+│  │  Session Resumption Injector    │     │  ← Injects last session memory
+│  └─────────────────────────────────┘     │
+└──────────────────────────────────────────┘
+    │
+    ▼
+Anthropic API  (only sees clean, compressed, focused context)
+    │
+    ▼
+┌──────────────────────────────────────────┐
+│         ContextMesh Daemon               │  ← Background brain
+│  ┌───────────────┐  ┌─────────────────┐  │
+│  │ Session Graph │  │   AST RepoMap   │  │  ← NetworkX + Tree-sitter
+│  │ (your memory) │  │ (code structure)│  │
+│  └───────────────┘  └─────────────────┘  │
+│  ┌─────────────────────────────────┐     │
+│  │  File Watcher (auto-reindex)    │     │  ← Keeps repomap always fresh
+│  └─────────────────────────────────┘     │
+└──────────────────────────────────────────┘
+    │
+    ▼ MCP Server
+Claude Code ← get_context() | get_project_architecture() | record_decision()
 ```
 
-* **RTK Output Compressor:** Automatically intercepts massive terminal outputs (like `npm install` or massive `grep` commands) and intelligently compresses them down before sending them to Anthropic, saving you up to 90% on useless token noise.
-* **Live Web Dashboard:** Monitor your exact token savings and costs averted in real-time by visiting the local God-Mode dashboard at `http://127.0.0.1:8765/dashboard`.
+---
 
-**The key insight**: semantic similarity alone fails for long coding sessions because everything related to the same feature looks similar. ContextMesh uses graph proximity + code dependency relationships + causal edges + recency + file overlap — not just vectors.
+## Features
+
+| Feature | What it does | Savings |
+|---|---|---|
+| **RTK Output Compressor** | Intercepts massive `grep`, `npm test`, `cat` outputs and crushes the middle noise | Up to 90% on tool outputs |
+| **Anti-Context Auto-Flusher** | Silently drops old resolved tool calls from history when context bloats past 150k chars | 30–60% on long sessions |
+| **AST Repo-Map** | Parses your entire codebase with Tree-sitter, gives Claude a dense structural map instead of raw files | 95% on code reads |
+| **Session Resumption** | Automatically injects last session summary on startup — no `/resume` command | Saves re-explanation tokens |
+| **File Watcher** | Auto-reindexes changed files in background so the repo map is always fresh | Zero manual indexing |
+| **God-Mode Dashboard** | Beautiful live web UI showing tokens saved, cost averted, and compression chart | — |
+| **Universal Auth** | Works with API keys, Claude Max/Pro subscriptions, AWS Bedrock, and Google Vertex | — |
+
+---
 
 ## Installation
 
-The easiest way to install ContextMesh globally is using `pipx`.
-
 ```bash
-# 1. Install globally
+# Install globally
 pipx install claude-contextmesh
 
-# 2. Register as a macOS background service (runs silently on boot)
-contextmesh install-mac
-```
-
-## Setup a new project
-
-When you start working on a new repository, just run:
-
-```bash
+# One-time transparent setup (like RTK/Headroom — no wrapper needed after this!)
 cd /path/to/your/project
 contextmesh init
 ```
-*This instantly connects Claude Code to the MCP server, indexes your codebase for the repo graph, and configures the hooks.*
 
-## Using ContextMesh
+`contextmesh init` does 4 things automatically:
+1. **Shell Profile** — writes `ANTHROPIC_BASE_URL` to `~/.zshrc` so every `claude` session routes through the proxy
+2. **Claude Code Hooks** — installs `PreToolUse`/`PostToolUse` hooks in `~/.claude/settings.json`
+3. **Persistent Service** — installs a macOS LaunchAgent (or Linux systemd unit) so the proxy auto-starts on login
+4. **MCP Server** — connects the ContextMesh brain to Claude Code
 
-You have two options for running Claude Code with ContextMesh:
-
-### Option A: Standard usage
-Just run `claude` normally. Claude will automatically query ContextMesh for relevant memory and codebase context using the MCP server.
-
-### Option B: Token Proxy mode (Recommended for Enterprise)
-If you want to measure *exact* token savings and cost reductions on your Anthropic bill, use our wrapper command instead:
+Then **reload your shell** once:
 ```bash
-claude-mesh
-```
-*(You can also run `contextmesh proxy` manually and set `export ANTHROPIC_BASE_URL=http://127.0.0.1:8099` if you prefer not to use the wrapper).*
-
-
-## View token savings
-
-```bash
-# Session summary
-contextmesh stats --session YOUR_SESSION_ID
-
-# Recent turns with savings breakdown
-contextmesh turns --session YOUR_SESSION_ID --limit 20
-
-# Global summary across all sessions
-contextmesh stats
-
-# If using proxy mode — actual API token counts
-contextmesh stats --proxy
+source ~/.zshrc   # or source ~/.bashrc
 ```
 
-## Token savings tracker
+From now on just use `claude` normally. ContextMesh intercepts everything transparently.
 
-Every time Claude calls `get_context()`, ContextMesh records:
+---
 
-| Metric | What it is |
-|--------|-----------|
-| **Accumulated tokens** | What the full session history would have been |
-| **Routed tokens** | What ContextMesh actually provided |
-| **Tokens saved** | The difference |
-| **Compression ratio** | routed / accumulated |
-| **Cost saved** | Based on your configured per-MTok price |
+## Commands
+
+### Core
+```bash
+contextmesh init          # One-time transparent setup (run once per machine)
+contextmesh start         # Start the daemon manually (if not using the service)
+contextmesh stop          # Stop the proxy service
+contextmesh stop --all    # Stop both proxy AND daemon
+contextmesh uninstall     # Remove all ContextMesh integrations cleanly
+```
+
+### Stats & Monitoring
+```bash
+contextmesh stats                           # Global token savings report
+contextmesh stats --session SESSION_ID      # Per-session breakdown
+contextmesh turns --session SESSION_ID      # Per-turn savings table
+contextmesh status                          # Check if daemon + proxy are running
+contextmesh dashboard                       # Open live web dashboard in browser
+```
+
+### Codebase
+```bash
+contextmesh index .                         # Manually index the current project
+contextmesh proxy                           # Start the proxy manually (foreground)
+contextmesh mcp                             # Run the MCP server (stdio)
+```
+
+---
+
+## Live Dashboard
+
+After running `contextmesh start`, open your browser to:
+
+```
+http://127.0.0.1:8765/dashboard
+```
+
+You'll see a live, auto-refreshing dark-themed dashboard with:
+- **4 stat cards**: Raw tokens sent, Compressed tokens, Total saved (green), USD saved (green)
+- **SVG bar chart**: Tokens saved per last 10 turns
+- **RTK Interception Log**: Every compression event with timestamps and savings %
+
+Or use the CLI shortcut:
+```bash
+contextmesh dashboard
+```
+
+---
+
+## Token Savings Report
+
+```bash
+$ contextmesh stats
+
+╭─ ContextMesh Global Token Savings Report ─╮
+│  Sessions tracked           │       12    │
+│  Turns tracked              │      284    │
+│  Total baseline tokens      │  2,847,000  │
+│  Total routed tokens        │    391,000  │
+│  Tokens saved               │  2,456,000  │
+│  Net saved (after overhead) │  2,412,000  │
+│  Avg compression ratio      │       14%   │
+│  Estimated cost saved       │    $7.3680  │
+╰────────────────────────────────────────────╯
+```
+
+---
+
+## MCP Tools available to Claude
+
+| Tool | What Claude uses it for |
+|---|---|
+| `get_context(session_id, task_hint, budget_tokens)` | Retrieve optimally scored context for the current task |
+| `get_project_architecture(project_path)` | Get AST repo-map (class/function signatures) without reading full files |
+| `record_decision(session_id, content, consequence)` | Permanently store an architectural decision |
+| `get_savings_report(session_id)` | See token savings from inside a session |
+| `switch_task(session_id, new_task_name)` | Explicitly switch task context |
+| `get_task_graph(session_id)` | View task hierarchy and node counts |
+
+---
 
 ## Architecture
+
+### Memory Tiers
+
+```
+HOT   → Current task context (always in every request)
+WARM  → Related decisions, nearby graph nodes (retrieved on demand)
+COLD  → Full historical archive (never auto-injected, always searchable)
+```
+
+### Context Scoring
+
+Before every `get_context()` call, every node in the graph is scored:
+
+```
+score =
+    semantic_relevance   (local embedding cosine similarity)
+  + graph_proximity      (BFS distance — depth 1=1.0, depth 2=0.7, depth 3=0.4)
+  + file_overlap         (Jaccard similarity with current task files)
+  + recency              (exponential decay from last_active)
+  + causal_relevance     (DECISION/BUG/SOLUTION type bonus)
+  + unresolved_bonus     (UNRESOLVED_ISSUE always surfaces)
+```
 
 ### Dual Graph
 
@@ -95,78 +196,60 @@ Every time Claude calls `get_context()`, ContextMesh records:
 - Decisions, bugs, solutions, errors, test results
 - Typed edges: `caused_by`, `solved_by`, `depends_on`, `same_task`
 
-**Repo Graph** — deterministic code relationships:
-- Functions, classes, methods, files (Tree-sitter parsed)
+**Repo Graph** — deterministic code relationships (Tree-sitter):
+- Functions, classes, methods across `.py`, `.ts`, `.js`, `.go`, `.rs`
 - `calls`, `imports`, `same_file`, `tested_by`, `inherits` edges
-- Updated incrementally on every file write
+- Auto-updated by the file watcher on every save
 
-### Hot / Warm / Cold Memory
-
-```
-HOT   → Current task context (always injected)
-WARM  → Related tasks, decisions, nearby graph nodes (retrieved on demand)
-COLD  → Full historical transcripts (never auto-injected)
-```
-
-### Context Router
-
-Before every `get_context()` call:
-
-```
-context_score =
-    semantic_relevance   (embedding cosine similarity)
-  + graph_proximity      (BFS distance in session graph)
-  + file_overlap         (Jaccard similarity with current task files)
-  + recency              (exponential decay from now)
-  + causal_relevance     (DECISION/BUG/SOLUTION type bonus)
-  + unresolved_bonus     (UNRESOLVED_ISSUE always surfaces)
-```
-
-### Cache-aware assembly order
-
-```
-STATIC (cacheable)
-─────────────────────────────
-=== CURRENT TASK ===
-[hot nodes — current thread]
-
-=== RELEVANT DECISIONS ===
-[top-scored decisions]
-
-DYNAMIC
-─────────────────────────────
-=== RELATED CODE CONTEXT ===
-[repo graph: functions/classes in touched files]
-
-=== RECENT HISTORY ===
-[recent warm nodes]
-
-=== UNRESOLVED ISSUES ===
-[always surfaced]
-```
+---
 
 ## Configuration
 
-`.contextmesh/config.toml` in your project (or `~/.contextmesh/config.toml` globally):
+`~/.contextmesh/config.toml` (global) or `.contextmesh/config.toml` (per project):
 
 ```toml
 [router]
 default_budget_tokens = 15000
 
 [tracker]
-input_price_per_mtok = 3.0       # Claude Enterprise cached input price
+input_price_per_mtok = 3.0        # Claude cached input price (USD per million)
 uncached_price_per_mtok = 15.0
 
 [embeddings]
-model = "all-MiniLM-L6-v2"       # Local, no API key needed
+model = "all-MiniLM-L6-v2"        # Local model, no API key needed (~22MB)
 
 [tasks]
-topic_shift_threshold = 0.35     # Cosine distance to detect task switch
+topic_shift_threshold = 0.35      # Cosine distance to auto-detect task switch
+
+[proxy]
+port = 8099
 ```
+
+---
+
+## Supported Claude Auth Modes
+
+ContextMesh auto-detects how you authenticate and behaves accordingly:
+
+| Mode | Detection | Behavior |
+|---|---|---|
+| **API Key** | `ANTHROPIC_API_KEY` is set | Full proxy (compression + cost tracking) |
+| **Max/Pro Subscription** | OAuth login, no API key | Full proxy (compression only, no per-token cost) |
+| **AWS Bedrock** | `CLAUDE_CODE_USE_BEDROCK=1` | Proxy skipped, daemon + MCP active |
+| **Google Vertex** | `CLAUDE_CODE_USE_VERTEX=1` | Proxy skipped, daemon + MCP active |
+
+---
 
 ## Development
 
 ```bash
+git clone https://github.com/gajanansr/ContextMesh
+cd ContextMesh
 pip install -e ".[dev]"
-pytest tests/
 ```
+
+---
+
+## License
+
+MIT
