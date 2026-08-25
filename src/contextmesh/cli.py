@@ -231,26 +231,18 @@ def install_mac() -> None:
 
 @main.command()
 def init() -> None:
-    """1-Click setup for a new repository."""
-    import os
-    import subprocess
-    from contextmesh.installer import setup_mcp_for_project
-    
-    project_path = Path.cwd()
-    console.print(f"[bold]Initializing ContextMesh for {project_path.name}...[/bold]")
-    
-    # 1. Connect MCP
-    setup_mcp_for_project(str(project_path))
-    
-    # 2. Index the codebase
-    console.print("\n[yellow]Scanning codebase...[/yellow]")
-    # Call the index command logic via subprocess
-    try:
-        subprocess.run(["contextmesh", "index", "."], check=True)
-    except Exception as e:
-        console.print(f"[red]Failed to index codebase: {e}[/red]")
-        
-    console.print("\n[bold green]Ready![/bold green] Just run `claude` or `claude-mesh` to begin.")
+    """Transparent 1-click setup — works like RTK/Headroom. No wrapper needed after this."""
+    from contextmesh.installer import full_install
+    project_path = str(Path.cwd())
+    console.print(f"[bold]Initializing ContextMesh for {Path(project_path).name}...[/bold]\n")
+    full_install(project_path)
+
+
+@main.command()
+def uninstall() -> None:
+    """Remove all ContextMesh transparent integrations from this machine."""
+    from contextmesh.installer import full_uninstall
+    full_uninstall()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # dashboard
