@@ -16,7 +16,7 @@ async def startup_event():
     db_path = config.data_dir / "contextmesh.db"
     await init_db(db_path)
 
-async def track_usage(chunk: bytes):
+async def track_usage(chunk: bytes, saved_tokens: int = 0):
     """Sniff the SSE stream for token usage without breaking the stream."""
     try:
         text = chunk.decode('utf-8', errors='ignore')
@@ -25,7 +25,7 @@ async def track_usage(chunk: bytes):
                 data = json.loads(line[6:])
                 if 'usage' in data and data['type'] in ('message_start', 'message_delta'):
                     usage = data['usage']
-                    logger.warning(f"[Proxy] Captured Usage: {usage}")
+                    logger.warning(f"[Proxy] Captured Usage: {usage} | RTK Saved: {saved_tokens}")
                     
                     # Store in DB
                     try:
@@ -33,14 +33,11 @@ async def track_usage(chunk: bytes):
                         import uuid
                         db = get_db()
                         turn_id = f"proxy_{uuid.uuid4().hex[:8]}"
-                        # We don't have the session_id or accumulated tokens from just the proxy
-                        # But we can log it with a dummy session ID for global reporting
-                        # or infer from process? For now just log it under a 'proxy_session'
-                        # In a true integration, we'd extract x-claude-session-id or correlate
-                        # by timestamp.
-                        # For now, let's just insert a simple row so stats aren't 0.
-                        input_tok = usage.get('input_tokens', 0)
-                        out_tok = usage.get('output_tokens', 0)
+                        
+                        routed_tok = usage.get('input_tokens', 0)
+                        accum_tok = routed_tok + saved_tokens
+                        
+                        # Use INSERT OR IGNORE just in case, though turn_id is unique
                         await db.execute(
                             """
                             INSERT INTO token_savings 
@@ -49,7 +46,7 @@ async def track_usage(chunk: bytes):
                              cold_tokens, repo_tokens, input_price_per_mtok)
                             VALUES (?, 'proxy_session', datetime('now'), ?, ?, 0, 0, 0, 0, 0, 3.0)
                             """,
-                            (turn_id, input_tok, input_tok)
+                            (turn_id, accum_tok, routed_tok)
                         )
                         await db.commit()
                     except Exception as db_e:
@@ -78,8 +75,20 @@ async def proxy(path: str, request: Request):
     
     # --- CONTEXTMESH RTK: Compress outbound payload ---
     from contextmesh.utils.compressor import compress_outbound_payload
-    body = compress_outbound_payload(raw_body)
-    
+    from contextmesh.utils.flusher import flush_old_context
+    body, rtk_tokens_saved = compress_outbound_payload(raw_body)
+
+    # --- CONTEXTMESH PHASE 3: Anti-Context Auto-Flusher ---
+    try:
+        parsed = json.loads(body.decode('utf-8'))
+        flushed_payload, flush_tokens_saved = flush_old_context(parsed)
+        flushed_body = json.dumps(flushed_payload).encode('utf-8')
+        saved_tokens = rtk_tokens_saved + flush_tokens_saved
+        body = flushed_body
+    except Exception as flush_err:
+        logger.error(f"[Flusher] Error during context flush: {flush_err}")
+        saved_tokens = rtk_tokens_saved
+
     # Update content-length if we changed the body
     if len(body) != len(raw_body):
         headers['content-length'] = str(len(body))
@@ -110,7 +119,7 @@ async def proxy(path: str, request: Request):
             try:
                 async for chunk in resp.aiter_bytes():
                     if b'"usage"' in chunk:
-                        await track_usage(chunk)
+                        await track_usage(chunk, saved_tokens)
                     compressed = compressor.compress(chunk)
                     if compressed:
                         yield compressed
