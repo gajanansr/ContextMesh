@@ -1,123 +1,312 @@
-"""Installer logic for macOS auto-start and Claude Code hooks."""
+"""
+ContextMesh Transparent Installation.
 
-import json
+Like RTK and Headroom, ContextMesh should work without any wrapper.
+This module handles:
+1. Writing ANTHROPIC_BASE_URL globally to the user's shell profile
+2. Writing PreToolUse/PostToolUse Claude Code hooks for RTK-style interception
+3. Setting up the proxy as a persistent LaunchAgent (macOS) / systemd unit (Linux)
+4. Removing all of the above on uninstall
+"""
+
+from __future__ import annotations
+
 import os
-import shutil
-import sys
+import platform
+import subprocess
+import json
 from pathlib import Path
 from rich.console import Console
 
 console = Console()
 
-def install_macos_launch_agent():
-    """Create a LaunchAgent so ContextMesh starts when the Mac boots."""
-    plist_dir = Path.home() / "Library" / "LaunchAgents"
-    plist_dir.mkdir(parents=True, exist_ok=True)
-    
-    plist_path = plist_dir / "com.contextmesh.daemon.plist"
-    
-    contextmesh_bin = shutil.which("contextmesh")
-    if not contextmesh_bin:
-        contextmesh_bin = sys.executable.replace("python", "contextmesh")
-        
-    log_dir = Path.home() / ".contextmesh" / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
+PROXY_PORT = 8099
+SHELL_EXPORT_LINE = f'\n# ContextMesh — transparent AI proxy\nexport ANTHROPIC_BASE_URL="http://127.0.0.1:{PROXY_PORT}"\n'
+SHELL_MARKER = "# ContextMesh — transparent AI proxy"
 
-    plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+SHELL_PROFILES = [
+    Path.home() / ".zshrc",
+    Path.home() / ".bashrc",
+    Path.home() / ".bash_profile",
+    Path.home() / ".profile",
+]
+
+
+# ── Shell Profile ──────────────────────────────────────────────────────────────
+
+def _detect_active_shell_profile() -> Path:
+    """Return the best shell profile to write to."""
+    shell = os.environ.get("SHELL", "")
+    if "zsh" in shell:
+        p = Path.home() / ".zshrc"
+        p.touch(exist_ok=True)
+        return p
+    if "bash" in shell:
+        for candidate in [Path.home() / ".bashrc", Path.home() / ".bash_profile"]:
+            if candidate.exists():
+                return candidate
+        p = Path.home() / ".bashrc"
+        p.touch(exist_ok=True)
+        return p
+    # Fallback
+    return Path.home() / ".profile"
+
+
+def inject_shell_env() -> Path | None:
+    """
+    Write ANTHROPIC_BASE_URL into the user's shell profile so the proxy
+    intercepts ALL claude sessions, not just claude-mesh ones.
+    Returns the path written, or None if already present.
+    """
+    profile = _detect_active_shell_profile()
+    content = profile.read_text(errors="replace") if profile.exists() else ""
+
+    if SHELL_MARKER in content:
+        console.print(f"  [dim]Shell profile already configured ({profile.name})[/dim]")
+        return None
+
+    with open(profile, "a") as f:
+        f.write(SHELL_EXPORT_LINE)
+
+    console.print(f"  [green]✓[/green] Added ANTHROPIC_BASE_URL to [bold]{profile}[/bold]")
+    return profile
+
+
+def remove_shell_env() -> None:
+    """Remove the ANTHROPIC_BASE_URL lines from all shell profiles."""
+    for profile in SHELL_PROFILES:
+        if not profile.exists():
+            continue
+        lines = profile.read_text(errors="replace").splitlines(keepends=True)
+        new_lines = []
+        skip_next = False
+        for line in lines:
+            if SHELL_MARKER in line:
+                skip_next = True
+                continue
+            if skip_next and "ANTHROPIC_BASE_URL" in line:
+                skip_next = False
+                continue
+            new_lines.append(line)
+        profile.write_text("".join(new_lines))
+    console.print("  [green]✓[/green] Removed ANTHROPIC_BASE_URL from shell profiles")
+
+
+# ── Claude Code Hooks ──────────────────────────────────────────────────────────
+
+HOOK_COMMAND_PROXY = (
+    "contextmesh proxy-hook"
+)
+
+def _get_claude_settings_path() -> Path:
+    return Path.home() / ".claude" / "settings.json"
+
+
+def inject_claude_hooks() -> None:
+    """
+    Write PreToolUse + PostToolUse hooks into ~/.claude/settings.json
+    so ContextMesh intercepts every tool call even without claude-mesh wrapper.
+    """
+    settings_path = _get_claude_settings_path()
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+    data: dict = {}
+    if settings_path.exists():
+        try:
+            data = json.loads(settings_path.read_text())
+        except Exception:
+            data = {}
+
+    hooks = data.setdefault("hooks", {})
+
+    # We only add if not already present
+    def _has_contextmesh_hook(event_hooks: list) -> bool:
+        for entry in event_hooks:
+            for h in entry.get("hooks", []):
+                if "contextmesh" in h.get("command", ""):
+                    return True
+        return False
+
+    changed = False
+    for event in ["PreToolUse", "PostToolUse"]:
+        event_list = hooks.setdefault(event, [])
+        if not _has_contextmesh_hook(event_list):
+            event_list.append({
+                "matcher": "*",
+                "hooks": [{
+                    "type": "command",
+                    # Fire and forget — don't block Claude
+                    "command": f"curl -s -X POST http://127.0.0.1:8765/hook -H 'Content-Type: application/json' -d '{{\"event_type\": \"{event}\", \"session_id\": \"'$CLAUDE_SESSION_ID'\", \"project_path\": \"'$CLAUDE_PROJECT_DIR'\"}}' > /dev/null 2>&1 || true",
+                    "timeout": 3
+                }]
+            })
+            changed = True
+
+    if changed:
+        settings_path.write_text(json.dumps(data, indent=2))
+        console.print("  [green]✓[/green] Claude Code hooks installed in [bold]~/.claude/settings.json[/bold]")
+    else:
+        console.print("  [dim]Claude Code hooks already installed[/dim]")
+
+
+def remove_claude_hooks() -> None:
+    """Remove ContextMesh hooks from ~/.claude/settings.json."""
+    settings_path = _get_claude_settings_path()
+    if not settings_path.exists():
+        return
+
+    data = json.loads(settings_path.read_text())
+    hooks = data.get("hooks", {})
+
+    for event in ["PreToolUse", "PostToolUse"]:
+        event_list = hooks.get(event, [])
+        hooks[event] = [
+            entry for entry in event_list
+            if not any("contextmesh" in h.get("command", "") for h in entry.get("hooks", []))
+        ]
+
+    data["hooks"] = hooks
+    settings_path.write_text(json.dumps(data, indent=2))
+    console.print("  [green]✓[/green] Removed ContextMesh Claude Code hooks")
+
+
+# ── Persistent Proxy Service ──────────────────────────────────────────────────
+
+LAUNCHD_LABEL = "ai.contextmesh.proxy"
+LAUNCHD_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
+
+def _find_contextmesh_bin() -> str:
+    """Find the absolute path to the contextmesh binary."""
+    result = subprocess.run(["which", "contextmesh"], capture_output=True, text=True)
+    return result.stdout.strip() or "contextmesh"
+
+
+def install_proxy_service() -> None:
+    """
+    Install the ContextMesh proxy as a persistent background service.
+    - macOS: LaunchAgent plist
+    - Linux: systemd user unit (fallback)
+    """
+    system = platform.system()
+    bin_path = _find_contextmesh_bin()
+    log_file = str(Path.home() / ".contextmesh" / "proxy.log")
+    Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+
+    if system == "Darwin":
+        plist = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.contextmesh.daemon</string>
+    <string>{LAUNCHD_LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{contextmesh_bin}</string>
-        <string>start</string>
+        <string>{bin_path}</string>
+        <string>proxy</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
-    <key>StandardErrorPath</key>
-    <string>{log_dir}/daemon.error.log</string>
     <key>StandardOutPath</key>
-    <string>{log_dir}/daemon.out.log</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>{os.environ.get('PATH', '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin')}</string>
-    </dict>
+    <string>{log_file}</string>
+    <key>StandardErrorPath</key>
+    <string>{log_file}</string>
 </dict>
-</plist>
+</plist>"""
+        LAUNCHD_PLIST.parent.mkdir(parents=True, exist_ok=True)
+        LAUNCHD_PLIST.write_text(plist)
+
+        # Load it immediately
+        subprocess.run(["launchctl", "unload", str(LAUNCHD_PLIST)], capture_output=True)
+        result = subprocess.run(["launchctl", "load", str(LAUNCHD_PLIST)], capture_output=True, text=True)
+
+        if result.returncode == 0:
+            console.print(f"  [green]✓[/green] Proxy installed as macOS LaunchAgent (auto-starts on login)")
+        else:
+            console.print(f"  [yellow]⚠[/yellow] LaunchAgent written but load failed: {result.stderr.strip()}")
+
+    elif system == "Linux":
+        systemd_dir = Path.home() / ".config" / "systemd" / "user"
+        systemd_dir.mkdir(parents=True, exist_ok=True)
+        unit_path = systemd_dir / "contextmesh-proxy.service"
+        unit = f"""[Unit]
+Description=ContextMesh Token Proxy
+After=network.target
+
+[Service]
+ExecStart={bin_path} proxy
+Restart=always
+StandardOutput=append:{log_file}
+StandardError=append:{log_file}
+
+[Install]
+WantedBy=default.target
 """
-    plist_path.write_text(plist_content)
-    
-    # Load the agent
-    os.system(f"launchctl unload {plist_path} 2>/dev/null")
-    os.system(f"launchctl load {plist_path}")
-    
-    console.print(f"[green]✓ macOS auto-start configured (LaunchAgent loaded).[/green]")
+        unit_path.write_text(unit)
+        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+        subprocess.run(["systemctl", "--user", "enable", "--now", "contextmesh-proxy"], capture_output=True)
+        console.print("  [green]✓[/green] Proxy installed as systemd user service (auto-starts on login)")
+    else:
+        console.print(f"  [yellow]⚠[/yellow] Unsupported OS ({system}). Please start the proxy manually with: contextmesh proxy")
 
 
-def setup_claude_hooks():
-    """Inject ContextMesh hooks into ~/.claude/settings.json."""
-    settings_path = Path.home() / ".claude" / "settings.json"
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-
-    settings = {}
-    if settings_path.exists():
-        try:
-            with open(settings_path, "r") as f:
-                settings = json.load(f)
-        except Exception:
-            pass
-
-    if "hooks" not in settings:
-        settings["hooks"] = {}
-    hooks = settings["hooks"]
-
-    # We use curl directly to send the hook to the daemon instead of a bash script
-    events = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]
-    for event in events:
-        if event not in hooks:
-            hooks[event] = []
-            
-        cmd = (
-            f"curl -s -X POST http://127.0.0.1:8765/hook "
-            f"-H 'Content-Type: application/json' "
-            f"-d '{{\"event_type\": \"{event}\", "
-            f"\"session_id\": \"'$CLAUDE_SESSION_ID'\", "
-            f"\"project_path\": \"'$CLAUDE_PROJECT_DIR'\"}}' > /dev/null 2>&1 || true"
-        )
-        
-        # Check if already installed
-        exists = False
-        for item in hooks[event]:
-            if "hooks" in item:
-                for h in item["hooks"]:
-                    if h.get("type") == "command" and "8765/hook" in h.get("command", ""):
-                        exists = True
-                        break
-        
-        if not exists:
-            hooks[event].append({
-                "hooks": [{
-                    "type": "command",
-                    "command": cmd
-                }]
-            })
-
-    settings_path.write_text(json.dumps(settings, indent=2))
-    console.print(f"[green]✓ Claude Code global hooks configured.[/green]")
+def uninstall_proxy_service() -> None:
+    """Remove the persistent proxy service."""
+    system = platform.system()
+    if system == "Darwin" and LAUNCHD_PLIST.exists():
+        subprocess.run(["launchctl", "unload", str(LAUNCHD_PLIST)], capture_output=True)
+        LAUNCHD_PLIST.unlink()
+        console.print("  [green]✓[/green] Removed macOS LaunchAgent")
+    elif system == "Linux":
+        subprocess.run(["systemctl", "--user", "disable", "--now", "contextmesh-proxy"], capture_output=True)
+        unit_path = Path.home() / ".config" / "systemd" / "user" / "contextmesh-proxy.service"
+        if unit_path.exists():
+            unit_path.unlink()
+        console.print("  [green]✓[/green] Removed systemd service")
 
 
-def setup_mcp_for_project(project_path: str):
+# ── Public API ─────────────────────────────────────────────────────────────────
+
+def setup_mcp_for_project(project_path: str) -> None:
     """Run the claude mcp add command for the current project."""
-    import subprocess
-    console.print(f"[yellow]Connecting Claude Code to ContextMesh router...[/yellow]")
+    console.print("[yellow]Connecting Claude Code to ContextMesh router...[/yellow]")
     try:
         subprocess.run(["claude", "mcp", "add", "contextmesh", "contextmesh", "mcp"], check=True)
-        console.print(f"[green]✓ MCP Server connected.[/green]")
+        console.print("[green]✓ MCP Server connected.[/green]")
     except Exception as e:
         console.print(f"[red]Failed to add MCP server: {e}[/red]")
         console.print("Make sure you run this inside a directory where you use Claude Code.")
+
+
+def full_install(project_path: str) -> None:
+    """
+    Full transparent installation — like RTK/Headroom.
+    After this, just running `claude` routes through ContextMesh automatically.
+    """
+    console.print("\n[bold]Step 1/4:[/bold] Injecting shell environment...")
+    modified_profile = inject_shell_env()
+
+    console.print("\n[bold]Step 2/4:[/bold] Installing Claude Code hooks...")
+    inject_claude_hooks()
+
+    console.print("\n[bold]Step 3/4:[/bold] Installing persistent proxy service...")
+    install_proxy_service()
+
+    console.print("\n[bold]Step 4/4:[/bold] Connecting MCP server...")
+    setup_mcp_for_project(project_path)
+
+    console.print("\n[bold green]✨ ContextMesh is now fully transparent![/bold green]")
+    console.print("Just run [bold]claude[/bold] normally — no wrapper needed.")
+    if modified_profile:
+        console.print(f"\n[dim]Reload your shell: source ~/{modified_profile.name}[/dim]")
+
+
+def full_uninstall() -> None:
+    """Remove all ContextMesh integrations."""
+    console.print("\n[bold]Removing ContextMesh transparent integration...[/bold]")
+    remove_shell_env()
+    remove_claude_hooks()
+    uninstall_proxy_service()
+    console.print("\n[green]✓ ContextMesh uninstalled.[/green]")
