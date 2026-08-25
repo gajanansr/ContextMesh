@@ -56,6 +56,69 @@ def start(host: str, port: int, reload: bool, log_level: str, project: str) -> N
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# stop
+# ──────────────────────────────────────────────────────────────────────────────
+
+@main.command()
+@click.option("--all", "stop_all", is_flag=True, default=False, help="Stop proxy + daemon")
+def stop(stop_all: bool) -> None:
+    """Stop the ContextMesh proxy (and optionally the daemon)."""
+    import platform
+    import subprocess
+    import signal
+    import socket
+
+    def _is_running(port: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            return s.connect_ex(("127.0.0.1", port)) == 0
+
+    system = platform.system()
+    stopped_any = False
+
+    # ── Stop Proxy (port 8099) ──────────────────────────────────────────
+    if _is_running(8099):
+        # Try to stop the LaunchAgent/systemd service first (graceful)
+        if system == "Darwin":
+            from pathlib import Path
+            plist = Path.home() / "Library" / "LaunchAgents" / "ai.contextmesh.proxy.plist"
+            if plist.exists():
+                subprocess.run(["launchctl", "unload", str(plist)], capture_output=True)
+                console.print("[green]✓[/green] Proxy LaunchAgent stopped")
+                stopped_any = True
+        elif system == "Linux":
+            result = subprocess.run(
+                ["systemctl", "--user", "stop", "contextmesh-proxy"],
+                capture_output=True
+            )
+            if result.returncode == 0:
+                console.print("[green]✓[/green] Proxy systemd service stopped")
+                stopped_any = True
+
+        # Fallback: pkill the process directly
+        if _is_running(8099):
+            subprocess.run(["pkill", "-f", "contextmesh proxy"], capture_output=True)
+            console.print("[green]✓[/green] Proxy process killed")
+            stopped_any = True
+    else:
+        console.print("[dim]Proxy is not running (port 8099)[/dim]")
+
+    # ── Stop Daemon (port 8765) ────────────────────────────────────────
+    if stop_all:
+        if _is_running(8765):
+            subprocess.run(["pkill", "-f", "contextmesh.daemon"], capture_output=True)
+            subprocess.run(["pkill", "-f", "contextmesh start"], capture_output=True)
+            console.print("[green]✓[/green] Daemon stopped")
+            stopped_any = True
+        else:
+            console.print("[dim]Daemon is not running (port 8765)[/dim]")
+
+    if not stopped_any:
+        console.print("[yellow]Nothing to stop.[/yellow]")
+    else:
+        console.print("\n[bold]ContextMesh stopped.[/bold] Run [bold]contextmesh start[/bold] + [bold]contextmesh proxy[/bold] to restart.")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # mcp
 # ──────────────────────────────────────────────────────────────────────────────
 
