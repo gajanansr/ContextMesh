@@ -5,16 +5,21 @@ from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, Response
 from contextmesh.store.db import init_db
 from contextmesh.config import get_config
+from contextmesh.utils.resumption import get_last_session_summary
 
 logger = logging.getLogger(__name__)
 
 proxy_app = FastAPI(title='ContextMesh Token Proxy')
 
+_session_preamble: str | None = None
+
 @proxy_app.on_event("startup")
 async def startup_event():
+    global _session_preamble
     config = get_config()
     db_path = config.data_dir / "contextmesh.db"
     await init_db(db_path)
+    _session_preamble = await get_last_session_summary(str(db_path))
 
 async def track_usage(chunk: bytes, saved_tokens: int = 0):
     """Sniff the SSE stream for token usage without breaking the stream."""
@@ -72,6 +77,24 @@ async def proxy(path: str, request: Request):
     headers.pop('accept-encoding', None)
     
     raw_body = await request.body()
+    
+    # --- CONTEXTMESH RESUMPTION INJECTION ---
+    global _session_preamble
+    if _session_preamble is not None:
+        try:
+            payload = json.loads(raw_body.decode('utf-8'))
+            if "messages" in payload and isinstance(payload["messages"], list):
+                if len(payload["messages"]) <= 2:
+                    # Inject before the first real user message
+                    preamble_msg = {"role": "user", "content": _session_preamble}
+                    ack_msg = {"role": "assistant", "content": "Understood. I have your session context loaded. What would you like to work on?"}
+                    
+                    payload["messages"] = [preamble_msg, ack_msg] + payload["messages"]
+                    raw_body = json.dumps(payload).encode('utf-8')
+            
+            _session_preamble = None
+        except Exception as e:
+            logger.error(f"Error injecting session preamble: {e}")
     
     # --- CONTEXTMESH RTK: Compress outbound payload ---
     from contextmesh.utils.compressor import compress_outbound_payload
