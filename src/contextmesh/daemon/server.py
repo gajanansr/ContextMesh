@@ -20,6 +20,19 @@ async def lifespan(app: FastAPI):
 
     init_handler(db, cfg)
 
+    try:
+        import asyncio
+        from contextmesh.graph.watcher import start_watcher
+        from contextmesh.graph.repo import init_repo_graph
+        from contextmesh.config import get_config
+        
+        config = get_config()
+        repo_graph = init_repo_graph(config.project_path, db)
+        start_watcher(repo_graph, config.project_path)
+        logger.info("File watcher started for %s", config.project_path)
+    except Exception as e:
+        logger.warning("File watcher failed to start: %s", e)
+
     # Try to bootstrap all optional components
     try:
         from contextmesh.bootstrap import bootstrap
@@ -49,70 +62,146 @@ def create_app() -> FastAPI:
         <!DOCTYPE html>
         <html>
         <head>
-            <title>ContextMesh Dashboard</title>
+            <title>ContextMesh God-Mode Dashboard</title>
             <style>
-                body { font-family: -apple-system, system-ui, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 40px; }
-                .container { max-width: 1000px; margin: 0 auto; }
-                h1 { font-size: 2.5rem; background: linear-gradient(to right, #38bdf8, #818cf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-                .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-top: 30px; }
-                .card { background: #1e293b; padding: 25px; border-radius: 12px; border: 1px solid #334155; }
-                .card h3 { margin: 0 0 10px 0; color: #94a3b8; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 1px; }
-                .card .value { font-size: 2.5rem; font-weight: bold; color: #f8fafc; }
-                .card .value.green { color: #4ade80; }
-                .log-section { margin-top: 40px; background: #1e293b; padding: 25px; border-radius: 12px; border: 1px solid #334155; }
-                pre { background: #0f172a; padding: 15px; border-radius: 8px; color: #a78bfa; overflow-x: auto; }
+                body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 30px; }
+                .container { max-width: 1200px; margin: 0 auto; }
+                h1 { font-size: 2rem; background: linear-gradient(to right, #38bdf8, #818cf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+                .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-top: 20px; }
+                .card { background: #1e293b; padding: 20px; border-radius: 12px; border: 1px solid #334155; }
+                .card h3 { margin: 0 0 10px 0; color: #94a3b8; font-size: 0.9rem; text-transform: uppercase; }
+                .card .value { font-size: 2rem; font-weight: bold; }
+                .text-green { color: #4ade80; }
+                .text-blue { color: #38bdf8; }
+                
+                .section { margin-top: 30px; background: #1e293b; padding: 20px; border-radius: 12px; border: 1px solid #334155; }
+                .section h2 { margin-top: 0; font-size: 1.2rem; color: #cbd5e1; }
+                
+                table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+                th, td { text-align: left; padding: 12px; border-bottom: 1px solid #334155; font-size: 0.9rem; }
+                th { color: #94a3b8; font-weight: normal; }
+                td { color: #e2e8f0; }
+                
+                .chart-container { height: 250px; display: flex; align-items: flex-end; gap: 10px; margin-top: 20px; padding-top: 20px; border-top: 1px solid #334155;}
+                .bar-group { display: flex; flex-direction: column; justify-content: flex-end; align-items: center; flex: 1; height: 100%; }
+                .bar { width: 100%; background: #4ade80; border-radius: 4px 4px 0 0; min-height: 1px; transition: height 0.3s; }
+                .bar-label { font-size: 0.75rem; color: #94a3b8; margin-top: 5px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; }
+                .bar-val { font-size: 0.75rem; color: #f8fafc; margin-bottom: 5px; }
             </style>
         </head>
         <body>
             <div class="container">
-                <h1>ContextMesh V2</h1>
-                <p style="color: #cbd5e1;">Live Token Compression & Savings Dashboard</p>
+                <h1>ContextMesh God-Mode</h1>
                 
                 <div class="grid">
                     <div class="card">
-                        <h3>Tokens Sent (Raw)</h3>
-                        <div class="value" id="raw-tokens">--</div>
+                        <h3>Total Tokens Sent (Raw)</h3>
+                        <div class="value text-blue" id="stat-raw">0</div>
                     </div>
                     <div class="card">
-                        <h3>Tokens Sent (Compressed)</h3>
-                        <div class="value" id="routed-tokens">--</div>
+                        <h3>Total Tokens Compressed</h3>
+                        <div class="value text-blue" id="stat-compressed">0</div>
                     </div>
                     <div class="card">
-                        <h3>Tokens Saved</h3>
-                        <div class="value green" id="saved-tokens">--</div>
+                        <h3>Total Tokens Saved</h3>
+                        <div class="value text-green" id="stat-saved">0</div>
                     </div>
                     <div class="card">
-                        <h3>Est. Cost Saved</h3>
-                        <div class="value green" id="cost-saved">$--</div>
+                        <h3>Est. Cost Saved (USD)</h3>
+                        <div class="value text-green" id="stat-cost">$0.0000</div>
                     </div>
                 </div>
 
-                <div class="log-section">
-                    <h3>Recent RTK Interceptions</h3>
-                    <pre id="logs">Waiting for Claude Code commands...</pre>
+                <div class="section">
+                    <h2>Tokens Saved (Last 10 Turns)</h2>
+                    <div class="chart-container" id="chart"></div>
+                </div>
+
+                <div class="section">
+                    <h2>RTK Interception Log</h2>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Timestamp</th>
+                                <th>Session</th>
+                                <th>Routed Tokens</th>
+                                <th>Saved Tokens</th>
+                                <th>Compression %</th>
+                                <th>Cost Saved USD</th>
+                            </tr>
+                        </thead>
+                        <tbody id="log-body">
+                            <tr><td colspan="6" style="text-align: center;">Waiting for data...</td></tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
 
             <script>
-                async function fetchStats() {
+                async function fetchData() {
                     try {
-                        const res = await fetch('/savings');
-                        const data = await res.json();
+                        const globRes = await fetch('/savings');
+                        const glob = await globRes.json();
                         
-                        document.getElementById('raw-tokens').innerText = data.total_accumulated_tokens.toLocaleString();
-                        document.getElementById('routed-tokens').innerText = data.total_routed_tokens.toLocaleString();
-                        document.getElementById('saved-tokens').innerText = data.total_tokens_saved.toLocaleString();
-                        document.getElementById('cost-saved').innerText = '$' + data.total_cost_saved_usd.toFixed(4);
-                        
-                        if (data.total_tokens_saved > 0) {
-                            document.getElementById('logs').innerText = `[ContextMesh RTK] Intercepted outbound payload!\nSuccessfully crushed ${data.total_tokens_saved.toLocaleString()} tokens of unstructured noise.`;
+                        document.getElementById('stat-raw').innerText = glob.total_accumulated_tokens?.toLocaleString() || '0';
+                        document.getElementById('stat-compressed').innerText = glob.total_routed_tokens?.toLocaleString() || '0';
+                        document.getElementById('stat-saved').innerText = glob.total_tokens_saved?.toLocaleString() || '0';
+                        document.getElementById('stat-cost').innerText = '$' + (glob.total_cost_saved_usd || 0).toFixed(4);
+
+                        let turns = [];
+                        try {
+                            const turnsRes = await fetch('/savings/proxy_session/turns');
+                            if (turnsRes.ok) {
+                                turns = await turnsRes.json();
+                            }
+                        } catch (e) {
+                            console.warn("Could not fetch turns for proxy_session", e);
                         }
-                    } catch (e) {
-                        console.error(e);
+
+                        const tbody = document.getElementById('log-body');
+                        if (turns && turns.length > 0) {
+                            tbody.innerHTML = turns.map(t => {
+                                const comp = t.compression_ratio ? (t.compression_ratio * 100).toFixed(1) + '%' : 'N/A';
+                                const cost = t.cost_saved_usd ? '$' + t.cost_saved_usd.toFixed(4) : '$0.0000';
+                                return `<tr>
+                                    <td>${new Date(t.timestamp).toLocaleTimeString()}</td>
+                                    <td>${(t.session_id || '').substring(0,8)}...</td>
+                                    <td>${t.routed_tokens?.toLocaleString() || 0}</td>
+                                    <td class="text-green">${t.tokens_saved?.toLocaleString() || 0}</td>
+                                    <td>${comp}</td>
+                                    <td class="text-green">${cost}</td>
+                                </tr>`;
+                            }).join('');
+                        } else {
+                            tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">No interception logs yet...</td></tr>';
+                        }
+
+                        const chart = document.getElementById('chart');
+                        if (turns && turns.length > 0) {
+                            const chartData = turns.slice(0, 10).reverse();
+                            const maxVal = Math.max(...chartData.map(t => t.tokens_saved || 0), 100);
+                            chart.innerHTML = chartData.map((t, i) => {
+                                const saved = t.tokens_saved || 0;
+                                const height = Math.max((saved / maxVal) * 200, 2);
+                                return `
+                                    <div class="bar-group">
+                                        <div class="bar-val">${saved.toLocaleString()}</div>
+                                        <div class="bar" style="height: ${height}px;"></div>
+                                        <div class="bar-label">Turn ${chartData.length - i}</div>
+                                    </div>
+                                `;
+                            }).join('');
+                        } else {
+                            chart.innerHTML = '<div style="color: #94a3b8; width: 100%; text-align: center; margin-bottom: 20px;">No chart data</div>';
+                        }
+
+                    } catch (err) {
+                        console.error("Dashboard fetch error:", err);
                     }
                 }
-                setInterval(fetchStats, 2000);
-                fetchStats();
+                
+                fetchData();
+                setInterval(fetchData, 3000);
             </script>
         </body>
         </html>

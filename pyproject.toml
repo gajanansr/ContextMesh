@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "claude-contextmesh"
-version = "0.4.0"
+version = "0.5.0"
 description = "Intelligent context layer for Claude Code — infinite session memory, minimal active context"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,6 +26,9 @@ dependencies = [
     # Code parsing (Tree-sitter)
     "tree-sitter>=0.23.0",
     "tree-sitter-language-pack>=0.7.0",
+
+    # File watcher
+    "watchfiles>=0.21.0",
 
     # Embeddings (local, no external API)
     "sentence-transformers>=3.3.0",

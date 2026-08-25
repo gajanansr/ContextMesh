@@ -253,6 +253,19 @@ def init() -> None:
     console.print("\n[bold green]Ready![/bold green] Just run `claude` or `claude-mesh` to begin.")
 
 # ──────────────────────────────────────────────────────────────────────────────
+# dashboard
+# ──────────────────────────────────────────────────────────────────────────────
+
+@main.command()
+def dashboard() -> None:
+    """Open the God-Mode dashboard in your browser."""
+    import webbrowser
+    url = f"{DAEMON_URL}/dashboard"
+    console.print(f"[bold green]Opening dashboard[/bold green] at {url}")
+    webbrowser.open(url)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # status
 # ──────────────────────────────────────────────────────────────────────────────
 
