@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "claude-contextmesh"
-version = "0.8.0"
+version = "0.9.0"
 description = "Intelligent context layer for Claude Code — infinite session memory, minimal active context"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -66,7 +66,6 @@ dev = [
 
 [project.scripts]
 contextmesh = "contextmesh.cli:main"
-claude-mesh = "contextmesh.wrapper:main"
 
 
 [tool.hatch.build.targets.wheel]

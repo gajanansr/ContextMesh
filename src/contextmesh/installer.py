@@ -280,37 +280,49 @@ def setup_mcp_for_project(project_path: str) -> None:
         console.print("Make sure you run this inside a directory where you use Claude Code.")
 
 
-def full_install(project_path: str) -> None:
+def full_install() -> None:
     """
-    Full transparent installation — like RTK/Headroom.
+    Full transparent global installation — like RTK/Headroom.
     After this, just running `claude` routes through ContextMesh automatically.
     """
-    console.print("\n[bold]Step 1/3:[/bold] Injecting shell environment...")
+    console.rule("[bold blue]ContextMesh Setup")
+    console.print("\n[bold]Initializing global proxy engine...[/bold]\n")
+
+    console.print("[dim]1/3[/dim] Configuring shell interception...")
     modified_profile = inject_shell_env()
 
-    console.print("\n[bold]Step 2/3:[/bold] Installing Claude Code hooks...")
+    console.print("\n[dim]2/3[/dim] Registering Claude Code hooks...")
     inject_claude_hooks()
 
-    console.print("\n[bold]Step 3/3:[/bold] Installing persistent proxy service...")
+    console.print("\n[dim]3/3[/dim] Launching persistent background service...")
     install_proxy_service()
 
-    console.print("\n[bold green]✨ ContextMesh is now fully transparent![/bold green]")
-    console.print("Just run [bold]claude[/bold] normally — no wrapper needed.")
+    console.print("\n[bold green]✨ ContextMesh is active and intercepting.[/bold green]")
+    console.print("You no longer need any special commands. Just run [bold cyan]claude[/bold cyan] normally.")
+    
     if modified_profile:
-        console.print(f"\n[dim]Reload your shell: source ~/{modified_profile.name}[/dim]")
+        console.print(f"\n[yellow]Action required:[/yellow] Reload your shell to apply changes:")
+        console.print(f"  [bold]source ~/{modified_profile.name}[/bold]\n")
+    console.rule()
 
 
 def full_uninstall() -> None:
     """Remove all ContextMesh integrations."""
-    console.print("\n[bold]Removing ContextMesh transparent integration...[/bold]")
+    console.rule("[bold red]Uninstalling ContextMesh")
+    console.print("\n[bold]Removing global proxy engine...[/bold]\n")
+    
     remove_shell_env()
     remove_claude_hooks()
     uninstall_proxy_service()
     
     # Clean up the legacy MCP server if it exists
     try:
-        subprocess.run(["claude", "mcp", "remove", "contextmesh"], capture_output=True)
+        result = subprocess.run(["claude", "mcp", "remove", "contextmesh"], capture_output=True, text=True)
+        if result.returncode == 0:
+            console.print("  [green]✓[/green] Removed legacy MCP configuration")
     except Exception:
         pass
         
-    console.print("\n[green]✓ ContextMesh uninstalled.[/green]")
+    console.print("\n[bold green]✓ Uninstallation complete.[/bold green]")
+    console.print("Your system has been restored to its original state.\n")
+    console.rule()
