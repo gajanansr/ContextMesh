@@ -307,6 +307,53 @@ def run(payload_b64: str, session: str) -> None:
 
 
 @main.command()
+@click.argument("transcript", type=click.Path(exists=True))
+@click.option("--session", required=True, help="Session ID the transcript belongs to")
+@click.option("--project", default=".", help="Project root the session ran in")
+def harvest(transcript: str, session: str, project: str) -> None:
+    """Extract knowledge nodes from a session transcript into the graph.
+
+    Runs automatically on SessionEnd; this is for backfilling old sessions.
+    """
+    from collections import Counter
+
+    from contextmesh.config import get_config
+    from contextmesh.memory.extractor import extract_nodes
+    from contextmesh.memory.store import save_nodes
+
+    project_path = str(Path(project).resolve())
+    nodes = extract_nodes(transcript, session, project_path)
+    if not nodes:
+        console.print("[yellow]Nothing extractable in that transcript.[/yellow]")
+        return
+
+    saved = save_nodes(str(get_config().data_dir / "contextmesh.db"), session, project_path, nodes)
+    console.print(f"[green]Harvested[/green] {saved} nodes from session {session[:8]}")
+    for node_type, count in Counter(n.node_type.value for n in nodes).most_common():
+        console.print(f"  {count:4d}  {node_type}")
+
+
+@main.command()
+@click.option("--project", default=".", help="Project root to recall for")
+@click.option("--prompt", default="", help="Prompt to rank memory against")
+def recall(project: str, prompt: str) -> None:
+    """Print the memory block that would be injected into a new session."""
+    from contextmesh.config import get_config
+    from contextmesh.memory.recall import build_recall_context
+
+    context = build_recall_context(
+        db_path=str(get_config().data_dir / "contextmesh.db"),
+        project_path=str(Path(project).resolve()),
+        prompt=prompt,
+    )
+    if not context:
+        console.print("[dim]No memory recorded for this project yet.[/dim]")
+        return
+    console.print(context)
+    console.print(f"\n[dim]{len(context)} chars (~{len(context)//4} tokens)[/dim]")
+
+
+@main.command()
 def init() -> None:
     """Global 1-click setup. Run this once per machine."""
     from contextmesh.installer import full_install
