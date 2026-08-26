@@ -160,17 +160,54 @@ def proxy(host: str, port: int) -> None:
 @main.command()
 @click.option("--session", default=None, help="Session ID (omit for global summary)")
 def stats(session: str | None) -> None:
-    """Show token savings report."""
-    from contextmesh.tracker.reporter import print_session_report, print_global_report
+    """Show real-time token savings driven by the proxy (no MCP needed)."""
+    from rich.table import Table
+    from rich.panel import Panel
+
     try:
         if session:
             resp = httpx.get(f"{DAEMON_URL}/savings/{session}", timeout=5.0)
-            resp.raise_for_status()
-            print_session_report(resp.json())
         else:
             resp = httpx.get(f"{DAEMON_URL}/savings", timeout=5.0)
-            resp.raise_for_status()
-            print_global_report(resp.json())
+        resp.raise_for_status()
+        d = resp.json()
+
+        # Also fetch detailed proxy stats
+        stats_resp = httpx.get(f"{DAEMON_URL}/stats", timeout=5.0)
+        s = stats_resp.json() if stats_resp.status_code == 200 else {}
+
+        table = Table(show_header=True, header_style="bold cyan", box=None, padding=(0, 2))
+        table.add_column("Metric", style="bold white")
+        table.add_column("Value", justify="right", style="bold green")
+
+        turns        = d.get("total_turns", s.get("turns_tracked", 0))
+        sessions     = d.get("session_count", s.get("sessions_tracked", 0))
+        original     = s.get("original_tokens", d.get("total_accumulated_tokens", 0))
+        actual       = d.get("total_routed_tokens", s.get("actual_tokens", 0))
+        rtk_saved    = s.get("rtk_tokens_saved", 0)
+        flush_saved  = s.get("flush_tokens_saved", 0)
+        total_saved  = d.get("total_tokens_saved", rtk_saved + flush_saved)
+        cost_saved   = d.get("total_cost_saved_usd", s.get("cost_saved_usd", 0.0))
+        ratio        = d.get("avg_compression_ratio", (actual / original) if original > 0 else 1.0)
+
+        table.add_row("Sessions tracked",          str(sessions))
+        table.add_row("Turns tracked",             str(turns))
+        table.add_row("", "")
+        table.add_row("Original tokens (est.)",    f"{original:,}")
+        table.add_row("Actual tokens sent",        f"{actual:,}")
+        table.add_row("", "")
+        table.add_row("[green]RTK compressed[/green]",    f"[green]{rtk_saved:,}[/green]")
+        table.add_row("[green]Context flushed[/green]",   f"[green]{flush_saved:,}[/green]")
+        table.add_row("[bold green]Total tokens saved[/bold green]", f"[bold green]{total_saved:,}[/bold green]")
+        table.add_row("Avg compression ratio",     f"{ratio:.0%}")
+        table.add_row("[bold green]Estimated cost saved[/bold green]", f"[bold green]${cost_saved:.4f}[/bold green]")
+
+        console.print()
+        console.print(Panel(table, title="[bold]ContextMesh Token Savings Report[/bold]", border_style="cyan"))
+        console.print()
+        if turns == 0:
+            console.print("[yellow]No turns tracked yet. Make sure the proxy is running: [bold]contextmesh proxy &[/bold][/yellow]")
+
     except httpx.ConnectError:
         console.print("[red]Daemon not running.[/red] Start it with: [bold]contextmesh start[/bold]")
     except Exception as e:
