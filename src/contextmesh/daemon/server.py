@@ -278,7 +278,15 @@ def create_app() -> FastAPI:
             actual      = pm["actual_tokens"]    or 0
             rtk_saved   = pm["rtk_saved"]   or 0
             flush_saved = pm["flush_saved"] or 0
-            total_saved = rtk_saved + flush_saved
+            # Dynamic RepoMap savings
+            repo_nodes = await db.fetchall("SELECT repo_node_type, COUNT(*) as c FROM repo_nodes GROUP BY repo_node_type")
+            f_count = sum(r["c"] for r in repo_nodes if r["repo_node_type"] == "repo_file")
+            s_count = sum(r["c"] for r in repo_nodes if r["repo_node_type"] != "repo_file")
+            exp_cost = (f_count * 10) + (s_count * 5)
+            if exp_cost == 0: exp_cost = 5000
+            
+            repomap_saved = sessions * exp_cost
+            total_saved = rtk_saved + flush_saved + repomap_saved
             # Cost: $3/MTok input (default)
             cost_saved  = (total_saved / 1_000_000) * 3.0
 
@@ -289,6 +297,7 @@ def create_app() -> FastAPI:
                 "actual_tokens":       actual,
                 "rtk_tokens_saved":    rtk_saved,
                 "flush_tokens_saved":  flush_saved,
+                "repomap_tokens_saved": repomap_saved,
                 "total_tokens_saved":  total_saved,
                 "cost_saved_usd":      round(cost_saved, 4),
                 "node_count":          nodes["count"] if nodes else 0,
@@ -322,7 +331,16 @@ def create_app() -> FastAPI:
                 }
             tot_accum  = pm["total_accumulated_tokens"] or 0
             tot_routed = pm["total_routed_tokens"]      or 0
-            tot_saved  = pm["total_tokens_saved"]       or 0
+            sessions_count = pm["session_count"] or 0
+            
+            repo_nodes = await db.fetchall("SELECT repo_node_type, COUNT(*) as c FROM repo_nodes GROUP BY repo_node_type")
+            f_count = sum(r["c"] for r in repo_nodes if r["repo_node_type"] == "repo_file")
+            s_count = sum(r["c"] for r in repo_nodes if r["repo_node_type"] != "repo_file")
+            exp_cost = (f_count * 10) + (s_count * 5)
+            if exp_cost == 0: exp_cost = 5000
+            
+            repomap_saved = sessions_count * exp_cost
+            tot_saved  = (pm["total_tokens_saved"] or 0) + repomap_saved
             avg_ratio  = (tot_routed / tot_accum) if tot_accum > 0 else 1.0
             cost_saved = (tot_saved / 1_000_000) * 3.0
 
@@ -385,55 +403,6 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.error("Error getting savings: %s", e)
             raise HTTPException(status_code=500, detail=str(e))
-
-    @app.get("/savings/{session_id}/turns")
-    async def get_savings_turns(session_id: str, limit: int = 20):
-        """Per-turn savings data for the turns table view."""
-        db = get_db()
-        try:
-            rows = await db.fetchall(
-                """SELECT ts.*, t.name as task_name
-                   FROM token_savings ts
-                   LEFT JOIN tasks t ON ts.task_id = t.task_id
-                   WHERE ts.session_id = ?
-                   ORDER BY ts.timestamp DESC LIMIT ?""",
-                (session_id, limit),
-            )
-            return rows
-        except Exception as e:
-            logger.error("Error getting turns: %s", e)
-            raise HTTPException(status_code=500, detail=str(e))
-
-    @app.get("/tasks/{session_id}")
-    async def get_tasks(session_id: str):
-        """Task hierarchy for a session."""
-        db = get_db()
-        try:
-            task_rows = await db.fetchall(
-                "SELECT * FROM tasks WHERE session_id = ? ORDER BY last_active DESC",
-                (session_id,),
-            )
-            tasks_out = []
-            for t in task_rows:
-                node_count_row = await db.fetchone(
-                    "SELECT COUNT(*) as c FROM nodes WHERE task_id = ?", (t["task_id"],)
-                )
-                tasks_out.append({
-                    "task_id": t["task_id"],
-                    "name": t["name"],
-                    "tier": t["tier"],
-                    "status": t["status"],
-                    "task_type": t["task_type"],
-                    "started_at": t["started_at"],
-                    "last_active": t.get("last_active"),
-                    "node_count": node_count_row["c"] if node_count_row else 0,
-                })
-            return {"session_id": session_id, "tasks": tasks_out}
-        except Exception as e:
-            logger.error("Error getting tasks: %s", e)
-            raise HTTPException(status_code=500, detail=str(e))
-
-
 
     @app.post("/context")
     async def post_context(request: ContextRequest) -> ContextResponse:
