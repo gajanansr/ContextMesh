@@ -26,6 +26,21 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def normalize_project(project_path: str | Path) -> str:
+    """Canonical form of a project path, for exact-match storage and lookup.
+
+    Claude Code reports cwd fully resolved. On macOS /tmp and /var are
+    symlinks into /private, so a path stored unresolved never matches the cwd
+    the hook is handed, and recall silently returns nothing -- silently,
+    because the hook swallows every exception by design. Both sides normalise
+    through here so the comparison cannot drift.
+    """
+    try:
+        return str(Path(project_path).expanduser().resolve())
+    except (OSError, RuntimeError):
+        return str(project_path).rstrip("/")
+
+
 def connect(db_path: str | Path) -> sqlite3.Connection:
     con = sqlite3.connect(str(db_path), timeout=5)
     con.row_factory = sqlite3.Row
@@ -40,6 +55,7 @@ def ensure_session(con: sqlite3.Connection, session_id: str, project_path: str) 
     fresh block to the conversation each turn, and the compounding cost would
     swamp anything recall saves.
     """
+    project_path = normalize_project(project_path)
     existing = con.execute(
         "SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)
     ).fetchone()
@@ -72,7 +88,7 @@ def save_nodes(
 
     con = connect(db_path)
     try:
-        ensure_session(con, session_id, project_path)
+        ensure_session(con, session_id, normalize_project(project_path))
         # Harvest is idempotent: re-running on the same transcript must not
         # duplicate. This is the bug that filled repo_nodes with 15k dupes.
         con.execute("DELETE FROM nodes WHERE session_id = ?", (session_id,))
@@ -101,7 +117,7 @@ def load_project_nodes(
             " JOIN sessions s ON n.session_id = s.session_id"
             " WHERE s.project_path = ?"
         )
-        params: list = [project_path]
+        params: list = [normalize_project(project_path)]
         if exclude_session:
             sql += " AND n.session_id != ?"
             params.append(exclude_session)

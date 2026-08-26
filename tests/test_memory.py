@@ -253,3 +253,28 @@ def test_errorless_failure_is_not_recorded(tmp_path):
         _tool_result(is_error=True, content="   \n  "),
     )
     assert not [n for n in extract_nodes(t, "s", "/p") if n.node_type is NodeType.ERROR]
+
+
+def test_symlinked_paths_resolve_to_the_same_project(db, tmp_path):
+    """macOS /tmp and /var are symlinks; an unresolved path must still match.
+
+    This silently emptied recall in the first real benchmark run: memory was
+    stored under /var/... and looked up under /private/var/..., so every ON
+    run received nothing and the arms were identical.
+    """
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+
+    nodes = extract_nodes(_transcript(tmp_path / "t", _user("work worth remembering")), "s1", str(real))
+    save_nodes(db, "s1", str(real), nodes)
+
+    assert len(load_project_nodes(db, str(link))) == 1
+
+
+def test_trailing_slash_does_not_split_a_project(db, tmp_path):
+    nodes = extract_nodes(_transcript(tmp_path / "t", _user("work worth remembering")), "s1", str(tmp_path))
+    save_nodes(db, "s1", str(tmp_path), nodes)
+
+    assert len(load_project_nodes(db, str(tmp_path) + "/")) == 1

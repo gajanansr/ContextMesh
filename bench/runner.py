@@ -202,6 +202,15 @@ def run_once(task: Task, arm: str, replicate: int, model: str | None = None) -> 
     return result
 
 
+class _ReplayedSession:
+    """Stands in for a parsed transcript when replaying saved rows."""
+
+    def __init__(self, cost: float, billed: float, turns: int):
+        self.cost_usd = cost
+        self.assistant_turns = turns
+        self.usage = type("Usage", (), {"billed_input_equivalent": billed})()
+
+
 @dataclass
 class Matrix:
     """Results for tasks x arms x replicates."""
@@ -216,6 +225,28 @@ class Matrix:
 
     def to_json(self) -> str:
         return json.dumps([r.row() for r in self.results], indent=2)
+
+    @classmethod
+    def from_json(cls, text: str) -> "Matrix":
+        """Rebuild a Matrix from saved rows so results can be re-analysed."""
+        matrix = cls()
+        for row in json.loads(text):
+            result = RunResult(
+                task_id=row["task_id"], arm=row["arm"], replicate=row["replicate"],
+                session_id=row.get("session_id", ""), verified=row.get("verified"),
+                cli_error=bool(row.get("cli_error")),
+                cli_cost_usd=float(row.get("cli_cost_usd") or 0.0),
+                cli_num_turns=int(row.get("turns") or 0),
+                duration_s=float(row.get("duration_s") or 0.0),
+                error=row.get("error", ""),
+            )
+            result.session = _ReplayedSession(
+                float(row.get("cost_usd") or 0.0),
+                float(row.get("billed_input_equivalent") or 0.0),
+                int(row.get("turns") or 0),
+            )
+            matrix.add(result)
+        return matrix
 
 
 def run_matrix(

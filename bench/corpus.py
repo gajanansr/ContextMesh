@@ -101,7 +101,7 @@ def build_fixture(workdir: Path) -> Fixture:
     from contextmesh.memory.store import connect, ensure_session
     from contextmesh.store.schema import CREATE_SCHEMA_SQL
 
-    root = workdir / "project"
+    root = (workdir / "project").resolve()
     if root.exists():
         shutil.rmtree(root)
     root.mkdir(parents=True)
@@ -112,7 +112,7 @@ def build_fixture(workdir: Path) -> Fixture:
     # the next replicate's verify passes without the agent doing anything.
     _git_init(root)
 
-    seed_db = workdir / "seed.db"
+    seed_db = (workdir / "seed.db").resolve()
     if seed_db.exists():
         seed_db.unlink()
 
