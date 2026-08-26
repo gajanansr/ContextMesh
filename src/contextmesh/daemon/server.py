@@ -1,4 +1,11 @@
 import logging
+from importlib.metadata import version as _pkg_version
+
+try:
+    _VERSION = _pkg_version("claude-contextmesh")
+except Exception:
+    _VERSION = "dev"
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 
@@ -51,7 +58,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="ContextMesh Daemon", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="ContextMesh Daemon", version=_VERSION, lifespan=lifespan)
 
     from fastapi.responses import HTMLResponse
 
@@ -243,7 +250,7 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def get_health():
-        return {"status": "ok", "version": "0.1.0"}
+        return {"status": "ok", "version": _VERSION}
 
     @app.get("/stats")
     async def get_stats():
@@ -252,10 +259,17 @@ def create_app() -> FastAPI:
             sessions = await db.fetchone("SELECT COUNT(*) as count FROM sessions")
             nodes = await db.fetchone("SELECT COUNT(*) as count FROM nodes")
             tokens = await db.fetchone("SELECT SUM(tokens_saved) as total FROM token_savings")
+            # Also count proxy-only turns (where session_id = 'proxy_session')
+            proxy_turns = await db.fetchone("SELECT COUNT(*) as count FROM token_savings")
+            proxy_saved = await db.fetchone(
+                "SELECT SUM(accumulated_session_tokens - routed_tokens) as saved FROM token_savings"
+            )
             return {
                 "session_count": sessions["count"] if sessions else 0,
                 "node_count": nodes["count"] if nodes else 0,
-                "total_tokens_saved": tokens["total"] if tokens and tokens["total"] else 0,
+                "total_tokens_saved": (tokens["total"] or 0) if tokens else 0,
+                "proxy_turns_tracked": proxy_turns["count"] if proxy_turns else 0,
+                "proxy_tokens_saved": int(proxy_saved["saved"] or 0) if proxy_saved else 0,
             }
         except Exception as e:
             logger.error("Error getting stats: %s", e)
