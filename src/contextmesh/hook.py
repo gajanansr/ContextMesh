@@ -1,6 +1,18 @@
 import sys
 import json
 import base64
+import os
+
+# Set CONTEXTMESH_DISABLE=1 to make the hook inert without uninstalling it.
+# The benchmark harness uses this as its control arm, so both arms run under
+# identical settings, auth, and working directory -- only the interception
+# changes. Also a kill switch when the hook misbehaves mid-session.
+DISABLE_ENV_VAR = "CONTEXTMESH_DISABLE"
+
+
+def is_disabled() -> bool:
+    return os.environ.get(DISABLE_ENV_VAR, "").strip().lower() in {"1", "true", "yes", "on"}
+
 
 def main():
     """
@@ -10,6 +22,9 @@ def main():
     (`contextmesh run`). This allows us to compress the output locally and inject
     the AST RepoMap without any network proxies.
     """
+    if is_disabled():
+        sys.exit(0)
+
     try:
         raw_data = sys.stdin.read()
         if not raw_data:
