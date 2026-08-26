@@ -119,40 +119,7 @@ def stop(stop_all: bool) -> None:
         console.print("[dim]To restart the proxy engine, run: contextmesh proxy &[/dim]")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# mcp
-# ──────────────────────────────────────────────────────────────────────────────
-
-@main.command()
-def mcp() -> None:
-    """Start the ContextMesh MCP server (stdio transport for Claude Code)."""
-    console.print("[bold green]ContextMesh MCP server[/bold green] starting (stdio)…")
-    from contextmesh.mcp.server import mcp as mcp_server
-    mcp_server.run()
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# proxy
-# ──────────────────────────────────────────────────────────────────────────────
-
-@main.command()
-@click.option("--host", default="127.0.0.1", show_default=True)
-@click.option("--port", default=8099, show_default=True)
-def proxy(host: str, port: int) -> None:
-    """
-    Start the token measurement proxy.
-
-    \b
-    Set ANTHROPIC_BASE_URL=http://127.0.0.1:8099 in your environment
-    so Claude Code routes API calls through this proxy. The proxy
-    records exact token counts (including cache hits) from real API
-    responses into the SQLite database.
-    """
-    console.print(f"[bold green]Token proxy[/bold green] on {host}:{port}")
-    console.print("Set: [yellow]export ANTHROPIC_BASE_URL=http://127.0.0.1:8099[/yellow]")
-    from contextmesh.proxy import proxy_app
-    uvicorn.run(proxy_app, host=host, port=port, log_level="warning")
-
+# Cleanup complete
 
 # ──────────────────────────────────────────────────────────────────────────────
 # stats
@@ -315,16 +282,6 @@ def index(path: str) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 # install-mac
 # ──────────────────────────────────────────────────────────────────────────────
-
-@main.command()
-def install_mac() -> None:
-    """Register ContextMesh to start automatically on macOS boot."""
-    from contextmesh.installer import install_macos_launch_agent, setup_claude_hooks
-    console.print("[bold]Installing ContextMesh as a background service...[/bold]")
-    install_macos_launch_agent()
-    setup_claude_hooks()
-    console.print("\n[bold green]Installation complete![/bold green]")
-    console.print("The daemon is now running in the background. You never have to manually run `contextmesh start` again.")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # init

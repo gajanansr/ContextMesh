@@ -41,60 +41,55 @@ Your Terminal (just run `claude`)
 | **Anti-Context Auto-Flusher** | Silently drops old resolved tool calls from history when context bloats past 150k chars | 30–60% on long sessions |
 | **Session Resumption** | Automatically injects your last session's summary on startup so Claude remembers decisions | Saves re-explanation tokens |
 | **God-Mode Dashboard** | Beautiful live web UI showing exact tokens saved, cost averted, and compression chart | — |
-| **Universal Auth** | Works with API keys, Claude Max/Pro subscriptions, AWS Bedrock, and Google Vertex | — |
+ContextMesh is the intelligent memory and context layer for **Claude Code**. 
+
+Instead of letting Claude waste tens of thousands of tokens blindly reading files and repeating mistakes, ContextMesh seamlessly intercepts Claude's local tools to compress output and inject a dense architectural map of your project.
+
+### Why use ContextMesh?
+1. **The AST Repo-Map Injector:** Forces Claude to understand your entire project architecture on Turn 1 (like Aider).
+2. **RTK Token Compression:** Intercepts noisy shell commands (`npm install`, `grep`) and compresses them by up to 90% before Claude sees them.
+3. **100% Claude Pro Compatible:** Powered entirely by local Hooks. Zero network proxies. Works flawlessly with API keys, Claude Pro, AWS Bedrock, and Google Vertex.
 
 ---
 
-## One-Time Setup
+## ⚡ Quickstart
 
-ContextMesh installs **globally** for your entire machine. You do not need to set it up per-repository.
-
+### 1. Global Setup (Run Once)
+Run this once for your entire machine:
 ```bash
-# 1. Install globally
 pipx install claude-contextmesh
-
-# 2. Initialize once for your whole machine
 contextmesh init
-
-# 3. Reload your shell
-source ~/.zshrc   # or source ~/.bashrc
 ```
+This installs the **ContextMesh Hook Engine** directly into Claude Code's global settings. From now on, ContextMesh silently intercepts and compresses terminal commands.
 
-`contextmesh init` does 3 things automatically:
-1. **Shell Profile** — writes `ANTHROPIC_BASE_URL` to `~/.zshrc` so every `claude` session routes through the proxy.
-2. **Claude Code Hooks** — installs `PreToolUse`/`PostToolUse` hooks in `~/.claude/settings.json`.
-3. **Persistent Service** — installs a macOS LaunchAgent (or Linux systemd unit) so the proxy auto-starts on login.
+### 2. Using it in a Project
+To enable the massive token-saving **AST Repo-Map**, you need ContextMesh to index your codebase. You have two options:
 
-From now on, the global proxy will intercept Claude Code everywhere.
-
----
-
-## 🚀 Using ContextMesh in a new project
-
-Once you've run the global `init`, ContextMesh's core proxy features (RTK Output Compression, Anti-Context Flusher, and Token Tracking) are **automatically active for every folder on your computer**. Just type `claude` and you are instantly saving tokens.
-
-**However, to enable the AST Repo-Map Injector:**
-Claude usually wastes tens of thousands of tokens blindly opening and reading files to understand a new codebase. ContextMesh solves this by injecting a dense, pre-computed AST map of your project on turn 1. 
-
-To enable this massive token-saving feature in a brand new project, just index it once before starting Claude:
-
+**Option A: The Manual Way (One-time)**
+Run this once when you enter a new project:
 ```bash
-cd /path/to/your/new/project
 contextmesh index .
-
-# Now start claude normally
-claude
 ```
+This builds the map. (You will need to run it again later if you make major structural changes to your files).
+
+**Option B: The Automatic Way (File Watcher)**
+Run this in the background while you work:
+```bash
+contextmesh start &
+```
+This starts the ContextMesh Daemon for the current repo. It will automatically watch your files for changes and keep the RepoMap perfectly up-to-date in real time. It also hosts a beautiful token-savings dashboard at `http://localhost:8765/dashboard`.
+
+Now, just type `claude` and enjoy the token savings!
 
 ---
 
-## Commands
+## 📊 Checking Stats
 
 ### Core
 ```bash
 contextmesh init          # One-time global setup (run once per machine)
 contextmesh status        # Check if the proxy is running and view live savings
-contextmesh stop          # Stop the proxy service
+contextmesh stop          # Stop the daemon
 contextmesh uninstall     # Cleanly remove all ContextMesh integrations
 ```
 
