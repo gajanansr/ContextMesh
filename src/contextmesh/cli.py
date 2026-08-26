@@ -60,66 +60,21 @@ def start(host: str, port: int, reload: bool, log_level: str, project: str) -> N
 # ──────────────────────────────────────────────────────────────────────────────
 
 @main.command()
-@click.option("--all", "stop_all", is_flag=True, default=False, help="Stop proxy + daemon")
-def stop(stop_all: bool) -> None:
-    """Stop the ContextMesh proxy (and optionally the daemon)."""
-    import platform
+def stop() -> None:
+    """Stop the ContextMesh background daemon (file watcher & web UI)."""
     import subprocess
-    import signal
     import socket
-
+    
     def _is_running(port: int) -> bool:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             return s.connect_ex(("127.0.0.1", port)) == 0
 
-    system = platform.system()
-    stopped_any = False
-
-    # ── Stop Proxy (port 8099) ──────────────────────────────────────────
-    if _is_running(8099):
-        # Try to stop the LaunchAgent/systemd service first (graceful)
-        if system == "Darwin":
-            from pathlib import Path
-            plist = Path.home() / "Library" / "LaunchAgents" / "ai.contextmesh.proxy.plist"
-            if plist.exists():
-                subprocess.run(["launchctl", "unload", str(plist)], capture_output=True)
-                console.print("[green]✓[/green] Proxy LaunchAgent stopped")
-                stopped_any = True
-        elif system == "Linux":
-            result = subprocess.run(
-                ["systemctl", "--user", "stop", "contextmesh-proxy"],
-                capture_output=True
-            )
-            if result.returncode == 0:
-                console.print("[green]✓[/green] Proxy systemd service stopped")
-                stopped_any = True
-
-        # Fallback: pkill the process directly
-        if _is_running(8099):
-            subprocess.run(["pkill", "-f", "contextmesh proxy"], capture_output=True)
-            console.print("[green]✓[/green] Proxy process killed")
-            stopped_any = True
+    if _is_running(8765):
+        subprocess.run(["pkill", "-f", "contextmesh.daemon"], capture_output=True)
+        subprocess.run(["pkill", "-f", "contextmesh start"], capture_output=True)
+        console.print("[green]✓[/green] ContextMesh daemon stopped successfully.")
     else:
-        console.print("[dim]Proxy is not running (port 8099)[/dim]")
-
-    # ── Stop Daemon (port 8765) ────────────────────────────────────────
-    if stop_all:
-        if _is_running(8765):
-            subprocess.run(["pkill", "-f", "contextmesh.daemon"], capture_output=True)
-            subprocess.run(["pkill", "-f", "contextmesh start"], capture_output=True)
-            console.print("[green]✓[/green] Daemon stopped")
-            stopped_any = True
-        else:
-            console.print("[dim]Daemon is not running (port 8765)[/dim]")
-
-    if not stopped_any:
-        console.print("[yellow]No ContextMesh services are currently running.[/yellow]")
-    else:
-        console.print("\n[bold green]✓ Services stopped successfully.[/bold green]")
-        console.print("[dim]To restart the proxy engine, run: contextmesh proxy &[/dim]")
-
-
-# Cleanup complete
+        console.print("[dim]Daemon is not running.[/dim]")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # stats
@@ -128,111 +83,75 @@ def stop(stop_all: bool) -> None:
 @main.command()
 @click.option("--session", default=None, help="Session ID (omit for global summary)")
 def stats(session: str | None) -> None:
-    """Show real-time token savings driven by the proxy (no MCP needed)."""
+    """Show real-time token savings from the Hook Engine."""
     from rich.table import Table
     from rich.panel import Panel
-
+    import sqlite3
+    from contextmesh.config import get_config
+    
+    db_path = str(get_config().data_dir / "contextmesh.db")
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    
     try:
         if session:
-            resp = httpx.get(f"{DAEMON_URL}/savings/{session}", timeout=5.0)
+            rows = con.execute("SELECT * FROM proxy_measurements WHERE session_id = ?", (session,)).fetchall()
+            turns = len(rows)
+            sessions = 1 if turns > 0 else 0
+            orig = sum(r["original_input_tokens"] or 0 for r in rows)
+            routed = sum(r["input_tokens"] or 0 for r in rows)
+            saved = sum(r["rtk_tokens_saved"] or 0 for r in rows)
         else:
-            resp = httpx.get(f"{DAEMON_URL}/savings", timeout=5.0)
-        resp.raise_for_status()
-        d = resp.json()
-
-        # Also fetch detailed proxy stats
-        stats_resp = httpx.get(f"{DAEMON_URL}/stats", timeout=5.0)
-        s = stats_resp.json() if stats_resp.status_code == 200 else {}
-
-        table = Table(show_header=True, header_style="bold cyan", box=None, padding=(0, 2))
-        table.add_column("Metric", style="bold white")
-        table.add_column("Value", justify="right", style="bold green")
-
-        turns        = d.get("total_turns", s.get("turns_tracked", 0))
-        sessions     = d.get("session_count", s.get("sessions_tracked", 0))
-        original     = s.get("original_tokens", d.get("total_accumulated_tokens", 0))
-        actual       = d.get("total_routed_tokens", s.get("actual_tokens", 0))
-        rtk_saved    = s.get("rtk_tokens_saved", 0)
-        flush_saved  = s.get("flush_tokens_saved", 0)
-        total_saved  = d.get("total_tokens_saved", rtk_saved + flush_saved)
-        cost_saved   = d.get("total_cost_saved_usd", s.get("cost_saved_usd", 0.0))
-        ratio        = d.get("avg_compression_ratio", (actual / original) if original > 0 else 1.0)
-
-        table.add_row("Sessions tracked",          str(sessions))
-        table.add_row("Turns tracked",             str(turns))
-        table.add_row("", "")
-        table.add_row("Original tokens (est.)",    f"{original:,}")
-        table.add_row("Actual tokens sent",        f"{actual:,}")
-        table.add_row("", "")
-        table.add_row("[green]RTK compressed[/green]",    f"[green]{rtk_saved:,}[/green]")
-        table.add_row("[green]Context flushed[/green]",   f"[green]{flush_saved:,}[/green]")
-        table.add_row("[bold green]Total tokens saved[/bold green]", f"[bold green]{total_saved:,}[/bold green]")
-        table.add_row("Avg compression ratio",     f"{ratio:.0%}")
-        table.add_row("[bold green]Estimated cost saved[/bold green]", f"[bold green]${cost_saved:.4f}[/bold green]")
-
-        console.print()
-        console.print(Panel(table, title="[bold]ContextMesh Token Savings Report[/bold]", border_style="cyan"))
-        console.print()
+            row = con.execute("""
+                SELECT 
+                    COUNT(*) as turns,
+                    COUNT(DISTINCT session_id) as sessions,
+                    SUM(original_input_tokens) as orig,
+                    SUM(input_tokens) as routed,
+                    SUM(rtk_tokens_saved) as saved
+                FROM proxy_measurements
+            """).fetchone()
+            turns = row["turns"] or 0
+            sessions = row["sessions"] or 0
+            orig = row["orig"] or 0
+            routed = row["routed"] or 0
+            saved = row["saved"] or 0
+            
         if turns == 0:
-            console.print("[yellow]No turns tracked yet. Make sure the proxy is running: [bold]contextmesh proxy &[/bold][/yellow]")
+            console.print("[yellow]No token tracking data found yet.[/yellow]")
+            return
 
-    except httpx.ConnectError:
-        console.print("[red]Daemon not running.[/red] Start it with: [bold]contextmesh start[/bold]")
+        repo_nodes = con.execute("SELECT repo_node_type, COUNT(*) as c FROM repo_nodes GROUP BY repo_node_type").fetchall()
+        files_count = sum(r["c"] for r in repo_nodes if r["repo_node_type"] == "repo_file")
+        symbols_count = sum(r["c"] for r in repo_nodes if r["repo_node_type"] != "repo_file")
+        
+        exploration_cost_per_session = (files_count * 10) + (symbols_count * 5)
+        if exploration_cost_per_session == 0:
+            exploration_cost_per_session = 5000 
+            
+        repomap_saved_est = sessions * exploration_cost_per_session
+        total_saved = saved + repomap_saved_est
+        cost_saved = (total_saved / 1_000_000) * 3.0
+        
+        title = f"ContextMesh Token Savings (Session: {session[:8]})" if session else "ContextMesh Token Savings (Global)"
+        table = Table(title=title)
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green", justify="right")
+
+        table.add_row("Sessions Tracked", f"{sessions:,}")
+        table.add_row("Total Turns Intercepted", f"{turns:,}")
+        table.add_row("Original Tokens (Estimated)", f"{orig:,}")
+        table.add_row("Tokens Sent (Compressed)", f"{routed:,}")
+        table.add_row("RTK Truncation Saved", f"{saved:,}")
+        table.add_row("RepoMap Averted Expl.", f"{repomap_saved_est:,}")
+        table.add_row("Total Tokens Saved", f"[bold]{total_saved:,}[/bold]")
+        table.add_row("Total Cost Saved (USD)", f"[bold]${cost_saved:.4f}[/bold]")
+
+        console.print(Panel(table, border_style="blue"))
     except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# turns
-# ──────────────────────────────────────────────────────────────────────────────
-
-@main.command()
-@click.option("--session", required=True, help="Session ID")
-@click.option("--limit", default=20, show_default=True, help="Number of turns to show")
-def turns(session: str, limit: int) -> None:
-    """Show per-turn token savings table."""
-    from contextmesh.tracker.reporter import print_turn_table
-    try:
-        resp = httpx.get(
-            f"{DAEMON_URL}/savings/{session}/turns",
-            params={"limit": limit},
-            timeout=5.0,
-        )
-        resp.raise_for_status()
-        print_turn_table(resp.json())
-    except httpx.ConnectError:
-        console.print("[red]Daemon not running.[/red] Start it with: [bold]contextmesh start[/bold]")
-    except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# tasks
-# ──────────────────────────────────────────────────────────────────────────────
-
-@main.command()
-@click.option("--session", required=True, help="Session ID")
-def tasks(session: str) -> None:
-    """Show task hierarchy for a session."""
-    try:
-        resp = httpx.get(f"{DAEMON_URL}/tasks/{session}", timeout=5.0)
-        resp.raise_for_status()
-        data = resp.json()
-        console.print(f"\n[bold]Tasks for session {session}[/bold]\n")
-        for t in data.get("tasks", []):
-            tier_color = {"hot": "green", "warm": "yellow", "cold": "dim"}.get(
-                t.get("tier", "cold"), "white"
-            )
-            console.print(
-                f"  [{tier_color}]{t.get('tier','?').upper()}[/{tier_color}] "
-                f"[bold]{t.get('name','?')}[/bold] "
-                f"({t.get('status','?')}) — {t.get('node_count', 0)} nodes"
-            )
-    except httpx.ConnectError:
-        console.print("[red]Daemon not running.[/red] Start it with: [bold]contextmesh start[/bold]")
-    except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
-
+        console.print(f"[red]Error reading stats:[/red] {e}")
+    finally:
+        con.close()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # index
@@ -402,41 +321,53 @@ def dashboard() -> None:
 
 @main.command()
 def status() -> None:
-    """Check if the daemon is running."""
-    try:
-        resp = httpx.get(f"{DAEMON_URL}/health", timeout=3.0)
-        resp.raise_for_status()
-        data = resp.json()
-        console.print(
-            f"[bold green]✓ Daemon is running[/bold green] "
-            f"(v{data.get('version', '?')}) at {DAEMON_URL}"
-        )
-        # Also show quick global stats
+    """Check if ContextMesh hooks are installed and active."""
+    import json
+    from pathlib import Path
+    
+    settings_path = Path.home() / ".claude" / "settings.json"
+    active = False
+    if settings_path.exists():
         try:
-            s = httpx.get(f"{DAEMON_URL}/stats", timeout=2.0).json()
-            console.print(
-                f"  Sessions: {s.get('session_count', 0)} | "
-                f"Nodes: {s.get('node_count', 0)} | "
-                f"Tokens saved: {s.get('total_tokens_saved', 0):,}"
-            )
-            proxy_turns = s.get("proxy_turns_tracked", 0)
-            proxy_saved = s.get("proxy_tokens_saved", 0)
-            if proxy_turns > 0:
-                console.print(
-                    f"  [bold green]RTK Proxy:[/bold green] "
-                    f"{proxy_turns} turns tracked | "
-                    f"~{proxy_saved:,} tokens compressed"
-                )
+            data = json.loads(settings_path.read_text())
+            pre_tool = data.get("hooks", {}).get("PreToolUse", [])
+            for entry in pre_tool:
+                for h in entry.get("hooks", []):
+                    if h.get("command") == "contextmesh-hook":
+                        active = True
+                        break
         except Exception:
             pass
-    except httpx.ConnectError:
-        console.print(
-            f"[red]✗ Daemon not running[/red] at {DAEMON_URL}\n"
-            "Start it with: [bold]contextmesh start[/bold]"
-        )
-    except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
-
+            
+    if active:
+        console.print("[bold green]✓ ContextMesh Hook Engine is active[/bold green]")
+        console.print("  It is natively intercepting Claude Code commands.")
+        import sqlite3
+        from contextmesh.config import get_config
+        db_path = str(get_config().data_dir / "contextmesh.db")
+        con = sqlite3.connect(db_path)
+        con.row_factory = sqlite3.Row
+        try:
+            row = con.execute("SELECT SUM(rtk_tokens_saved) as saved FROM proxy_measurements").fetchone()
+            saved = row["saved"] or 0
+            
+            repo_nodes = con.execute("SELECT repo_node_type, COUNT(*) as c FROM repo_nodes GROUP BY repo_node_type").fetchall()
+            files_count = sum(r["c"] for r in repo_nodes if r["repo_node_type"] == "repo_file")
+            symbols_count = sum(r["c"] for r in repo_nodes if r["repo_node_type"] != "repo_file")
+            exp_cost = (files_count * 10) + (symbols_count * 5)
+            if exp_cost == 0: exp_cost = 5000
+            
+            sessions = con.execute("SELECT COUNT(DISTINCT session_id) as c FROM proxy_measurements").fetchone()["c"] or 0
+            repomap_saved = sessions * exp_cost
+            tot = saved + repomap_saved
+            console.print(f"  [cyan]Token Savings: ~{tot:,} tokens ({saved:,} RTK + {repomap_saved:,} RepoMap)[/cyan]")
+        except Exception:
+            pass
+        finally:
+            con.close()
+    else:
+        console.print("[bold red]✗ ContextMesh Hook Engine is not active[/bold red]")
+        console.print("  Run [bold cyan]contextmesh init[/bold cyan] to enable it.")
 
 if __name__ == "__main__":
     main()
