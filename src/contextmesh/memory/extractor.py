@@ -36,6 +36,12 @@ TEST_MARKERS = (
 # Prompts shorter than this, or matching a filler phrase, carry no recallable
 # intent. Storing them dilutes the score ranking with noise.
 MIN_PROMPT_CHARS = 15
+
+# An error is recalled to warn the next session, so the message matters and
+# the command that produced it does not. Commands are kept only as a short
+# hint; the full text lives in metadata.
+MAX_ERROR_MESSAGE_CHARS = 240
+MAX_COMMAND_HINT_CHARS = 60
 FILLER_PROMPTS = {
     "retry", "again", "continue", "go on", "go ahead", "ok", "okay", "yes",
     "no", "sure", "thanks", "next", "stop", "wait", "hmm", "y", "n",
@@ -75,6 +81,30 @@ def _text_of(block: dict) -> str:
     if isinstance(content, list):
         return "\n".join(p.get("text", "") for p in content if isinstance(p, dict))
     return ""
+
+
+def _command_hint(command: str) -> str:
+    """A recognisable stub of a command, not the whole pipeline."""
+    first = " ".join((command or "").split())
+    if len(first) > MAX_COMMAND_HINT_CHARS:
+        first = first[: MAX_COMMAND_HINT_CHARS - 1] + "…"
+    return first
+
+
+def _error_message(text: str) -> str:
+    """The lines of an error worth remembering.
+
+    Tracebacks put the useful line last and the noise in the middle, so the
+    tail is kept rather than the head.
+    """
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    # Prefer an explicit exception/error line if one is present.
+    for line in reversed(lines):
+        if any(marker in line for marker in ("Error", "error:", "Exception", "FAILED", "fatal:")):
+            return _truncate(line, MAX_ERROR_MESSAGE_CHARS)
+    return _truncate(lines[-1], MAX_ERROR_MESSAGE_CHARS)
 
 
 def _is_meaningful_prompt(text: str) -> bool:
@@ -137,15 +167,23 @@ def extract_nodes(
                 tool_name, tool_input = pending.pop(block.get("tool_use_id", ""), ("", {}))
                 if not block.get("is_error"):
                     continue
-                target = tool_input.get("file_path") or tool_input.get("command") or ""
-                files = [target] if tool_input.get("file_path") else []
+
+                file_path = tool_input.get("file_path")
+                command = tool_input.get("command") or ""
+                files = [file_path] if file_path else []
                 error_files.update(files)
+
+                message = _error_message(_text_of(block))
+                if not message:
+                    continue
+                where = file_path or _command_hint(command)
                 add(
                     NodeType.ERROR,
-                    f"{tool_name} failed on {target}\n{_text_of(block)}",
+                    f"{tool_name} failed ({where}): {message}" if where
+                    else f"{tool_name} failed: {message}",
                     files_involved=files,
                     importance=0.8,
-                    metadata={"tool": tool_name},
+                    metadata={"tool": tool_name, "command": _truncate(command, 400)},
                 )
 
         elif kind == "assistant":
