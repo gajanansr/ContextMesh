@@ -29,44 +29,59 @@ SHELL_PROFILES = [
     Path.home() / ".bashrc",
     Path.home() / ".bash_profile",
     Path.home() / ".profile",
+    Path.home() / ".config" / "fish" / "config.fish",
 ]
 
 
 # ── Shell Profile ──────────────────────────────────────────────────────────────
 
-def _detect_active_shell_profile() -> Path:
-    """Return the best shell profile to write to."""
+def _detect_active_shell_profile() -> tuple[Path, bool]:
+    """Return (profile_path, is_fish)."""
     shell = os.environ.get("SHELL", "")
+    
+    if "fish" in shell:
+        p = Path.home() / ".config" / "fish" / "config.fish"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch(exist_ok=True)
+        return p, True
+        
     if "zsh" in shell:
         p = Path.home() / ".zshrc"
         p.touch(exist_ok=True)
-        return p
+        return p, False
+        
     if "bash" in shell:
         for candidate in [Path.home() / ".bashrc", Path.home() / ".bash_profile"]:
             if candidate.exists():
-                return candidate
+                return candidate, False
         p = Path.home() / ".bashrc"
         p.touch(exist_ok=True)
-        return p
+        return p, False
+        
     # Fallback
-    return Path.home() / ".profile"
+    return Path.home() / ".profile", False
 
 
 def inject_shell_env() -> Path | None:
     """
-    Write ANTHROPIC_BASE_URL into the user's shell profile so the proxy
-    intercepts ALL claude sessions, not just claude-mesh ones.
-    Returns the path written, or None if already present.
+    Write ANTHROPIC_BASE_URL into the user's shell profile.
+    Handles Bash/Zsh (export) and Fish (set -gx).
     """
-    profile = _detect_active_shell_profile()
+    profile, is_fish = _detect_active_shell_profile()
     content = profile.read_text(errors="replace") if profile.exists() else ""
 
     if SHELL_MARKER in content:
         console.print(f"  [dim]Shell profile already configured ({profile.name})[/dim]")
         return None
 
+    export_line = (
+        f'\n{SHELL_MARKER}\nset -gx ANTHROPIC_BASE_URL "http://127.0.0.1:{PROXY_PORT}"\n'
+        if is_fish else
+        f'\n{SHELL_MARKER}\nexport ANTHROPIC_BASE_URL="http://127.0.0.1:{PROXY_PORT}"\n'
+    )
+
     with open(profile, "a") as f:
-        f.write(SHELL_EXPORT_LINE)
+        f.write(export_line)
 
     console.print(f"  [green]✓[/green] Added ANTHROPIC_BASE_URL to [bold]{profile}[/bold]")
     return profile
