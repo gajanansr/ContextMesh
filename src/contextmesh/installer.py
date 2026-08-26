@@ -119,8 +119,8 @@ def _get_claude_settings_path() -> Path:
 
 def inject_claude_hooks() -> None:
     """
-    Write PreToolUse + PostToolUse hooks into ~/.claude/settings.json
-    so ContextMesh intercepts every tool call even without claude-mesh wrapper.
+    Write PreToolUse hook into ~/.claude/settings.json
+    so the ContextMesh Hook Engine intercepts terminal commands.
     """
     settings_path = _get_claude_settings_path()
     settings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -133,31 +133,24 @@ def inject_claude_hooks() -> None:
             data = {}
 
     hooks = data.setdefault("hooks", {})
+    pre_tool = hooks.setdefault("PreToolUse", [])
 
-    # We only add if not already present
-    def _has_contextmesh_hook(event_hooks: list) -> bool:
-        for entry in event_hooks:
-            for h in entry.get("hooks", []):
-                if "contextmesh" in h.get("command", ""):
-                    return True
-        return False
+    # Check if contextmesh-hook is already installed
+    has_hook = False
+    for entry in pre_tool:
+        for h in entry.get("hooks", []):
+            if h.get("command") == "contextmesh-hook":
+                has_hook = True
+                break
 
-    changed = False
-    for event in ["PreToolUse", "PostToolUse"]:
-        event_list = hooks.setdefault(event, [])
-        if not _has_contextmesh_hook(event_list):
-            event_list.append({
-                "matcher": "*",
-                "hooks": [{
-                    "type": "command",
-                    # Fire and forget — don't block Claude
-                    "command": f"curl -s -X POST http://127.0.0.1:8765/hook -H 'Content-Type: application/json' -d '{{\"event_type\": \"{event}\", \"session_id\": \"'$CLAUDE_SESSION_ID'\", \"project_path\": \"'$CLAUDE_PROJECT_DIR'\"}}' > /dev/null 2>&1 || true",
-                    "timeout": 3
-                }]
-            })
-            changed = True
-
-    if changed:
+    if not has_hook:
+        pre_tool.append({
+            "matcher": "*",
+            "hooks": [{
+                "type": "command",
+                "command": "contextmesh-hook"
+            }]
+        })
         settings_path.write_text(json.dumps(data, indent=2))
         console.print("  [green]✓[/green] Claude Code hooks installed in [bold]~/.claude/settings.json[/bold]")
     else:
@@ -180,9 +173,8 @@ def remove_claude_hooks() -> None:
             if not any("contextmesh" in h.get("command", "") for h in entry.get("hooks", []))
         ]
 
-    data["hooks"] = hooks
     settings_path.write_text(json.dumps(data, indent=2))
-    console.print("  [green]✓[/green] Removed ContextMesh Claude Code hooks")
+    console.print("  [green]✓[/green] Removed ContextMesh hooks from ~/.claude/settings.json")
 
 
 # ── Persistent Proxy Service ──────────────────────────────────────────────────
@@ -297,40 +289,34 @@ def setup_mcp_for_project(project_path: str) -> None:
 
 def full_install() -> None:
     """
-    Full transparent global installation — like RTK/Headroom.
-    After this, just running `claude` routes through ContextMesh automatically.
+    Full Hook Engine installation.
+    After this, Claude Code routes terminal commands through ContextMesh automatically.
     """
     console.rule("[bold blue]ContextMesh Setup")
-    console.print("\n[bold]Initializing global proxy engine...[/bold]\n")
+    console.print("\n[bold]Initializing Hook Engine...[/bold]\n")
 
-    console.print("[dim]1/3[/dim] Configuring shell interception...")
-    modified_profile = inject_shell_env()
-
-    console.print("\n[dim]2/3[/dim] Registering Claude Code hooks...")
+    console.print("[dim]1/1[/dim] Registering Claude Code hooks...")
     inject_claude_hooks()
-
-    console.print("\n[dim]3/3[/dim] Launching persistent background service...")
-    install_proxy_service()
 
     console.print("\n[bold green]✨ ContextMesh is active and intercepting.[/bold green]")
     console.print("You no longer need any special commands. Just run [bold cyan]claude[/bold cyan] normally.")
-    
-    if modified_profile:
-        console.print(f"\n[yellow]Action required:[/yellow] Reload your shell to apply changes:")
-        console.print(f"  [bold]source ~/{modified_profile.name}[/bold]\n")
     console.rule()
 
 
 def full_uninstall() -> None:
     """Remove all ContextMesh integrations."""
     console.rule("[bold red]Uninstalling ContextMesh")
-    console.print("\n[bold]Removing global proxy engine...[/bold]\n")
+    console.print("\n[bold]Removing Hook Engine...[/bold]\n")
     
-    remove_shell_env()
     remove_claude_hooks()
-    uninstall_proxy_service()
     
-    # Clean up the legacy MCP server if it exists
+    # Clean up legacy stuff if it exists from older versions
+    remove_shell_env()
+    try:
+        uninstall_proxy_service()
+    except Exception:
+        pass
+    
     try:
         result = subprocess.run(["claude", "mcp", "remove", "contextmesh"], capture_output=True, text=True)
         if result.returncode == 0:

@@ -331,6 +331,88 @@ def install_mac() -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 @main.command()
+@click.argument("payload_b64")
+@click.option("--session", required=True)
+def run(payload_b64: str, session: str) -> None:
+    """Internal executor used by the Hook Engine."""
+    import base64
+    import subprocess
+    import sqlite3
+    import uuid
+    from contextmesh.config import get_config
+    from contextmesh.utils.injector import _build_repomap_from_db
+
+    # 1. Decode command
+    try:
+        command = base64.b64decode(payload_b64).decode("utf-8")
+    except Exception:
+        print("ContextMesh Error: Failed to decode command.")
+        return
+
+    # 2. Execute locally
+    proc = subprocess.run(command, shell=True, capture_output=True, text=True)
+    raw_output = proc.stdout
+    if proc.stderr:
+        raw_output += f"\n[STDERR]\n{proc.stderr}"
+    
+    if not raw_output.strip():
+        raw_output = "(Command executed successfully with no output)"
+
+    # 3. Compress (RTK style)
+    original_chars = len(raw_output)
+    if original_chars > 12_000:
+        compressed = (
+            raw_output[:3000] 
+            + f"\n\n... [ContextMesh RTK Compressor: {original_chars - 6000} chars removed to save tokens] ...\n\n" 
+            + raw_output[-3000:]
+        )
+    else:
+        compressed = raw_output
+
+    saved_chars = original_chars - len(compressed)
+    rtk_tokens_saved = saved_chars // 4
+    final_output = compressed
+
+    # 4. Inject RepoMap (Turn 1 only) & Write Stats
+    try:
+        db_path = str(get_config().data_dir / "contextmesh.db")
+        
+        # Try to inject Repomap first (even if DB locks, we can just read the file)
+        try:
+            # We'll just always inject it for the first tool call of the session
+            # Claude's session id changes each run. 
+            repomap = _build_repomap_from_db(db_path)
+            if repomap:
+                final_output = repomap + "\n\n=== COMMAND OUTPUT ===\n" + final_output
+        except Exception:
+            pass
+
+        con = sqlite3.connect(db_path, timeout=5)
+        # Record stat measurement
+        mid = uuid.uuid4().hex
+        est_tokens = len(compressed) // 4
+        orig_est_tokens = original_chars // 4
+        
+        con.execute(
+            """INSERT INTO proxy_measurements 
+               (measurement_id, session_id, timestamp, model, input_tokens, original_input_tokens, rtk_tokens_saved, request_preview)
+               VALUES (?, ?, datetime('now'), 'hook', ?, ?, ?, ?)""",
+            (mid, session, est_tokens, orig_est_tokens, rtk_tokens_saved, command[:100])
+        )
+        con.commit()
+        con.close()
+    except Exception as e:
+        # Log the error so we can debug
+        with open("/tmp/contextmesh_err.log", "a") as f:
+            f.write(f"DB Error: {str(e)}\n")
+        pass
+
+    # 5. Output to Claude
+    print(final_output)
+
+
+
+@main.command()
 def init() -> None:
     """Global 1-click setup. Run this once per machine."""
     from contextmesh.installer import full_install
