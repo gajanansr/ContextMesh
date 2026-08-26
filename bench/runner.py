@@ -54,6 +54,13 @@ class Task:
     verify: str | None = None
     setup: str | None = None
     timeout_s: int = 1800
+    # Settings file passed to `claude --settings`. Needed to exercise a hook
+    # build other than whatever is registered globally.
+    settings: Path | None = None
+    # Extra environment for the agent process, e.g. CONTEXTMESH_DATA_DIR to
+    # give each run its own database. Applied before the arm overlay, so an
+    # arm can still override it.
+    env: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "repo", Path(self.repo))
@@ -112,9 +119,10 @@ def find_transcript(session_id: str, config_dir: Path | None = None) -> Path | N
     return matches[0] if matches else None
 
 
-def _shell(command: str, cwd: Path, timeout: int) -> tuple[int, str]:
+def _shell(command: str, cwd: Path, timeout: int, extra_env: dict | None = None) -> tuple[int, str]:
     """Run a setup/verify command with the hook inert, so it never self-measures."""
     env = dict(os.environ, CONTEXTMESH_DISABLE="1")
+    env.update(extra_env or {})
     try:
         proc = subprocess.run(
             command, shell=True, cwd=cwd, env=env,
@@ -133,12 +141,13 @@ def run_once(task: Task, arm: str, replicate: int, model: str | None = None) -> 
     result = RunResult(task_id=task.task_id, arm=arm, replicate=replicate)
 
     if task.setup:
-        code, out = _shell(task.setup, task.repo, timeout=300)
+        code, out = _shell(task.setup, task.repo, timeout=300, extra_env=task.env)
         if code != 0:
             result.error = f"setup failed ({code}): {out[-300:]}"
             return result
 
     env = dict(os.environ)
+    env.update(task.env)
     env.update(ARMS[arm])
     # Keep the agent from inheriting our own session's identity.
     env.pop("CLAUDE_CODE_SESSION_ID", None)
@@ -148,6 +157,8 @@ def run_once(task: Task, arm: str, replicate: int, model: str | None = None) -> 
         "--output-format", "json",
         "--permission-mode", "bypassPermissions",
     ]
+    if task.settings:
+        cmd += ["--settings", str(task.settings)]
     if model:
         cmd += ["--model", model]
 
@@ -183,7 +194,7 @@ def run_once(task: Task, arm: str, replicate: int, model: str | None = None) -> 
         result.session = parse_session(result.transcript)
 
     if task.verify:
-        code, out = _shell(task.verify, task.repo, timeout=600)
+        code, out = _shell(task.verify, task.repo, timeout=600, extra_env=task.env)
         result.verified = code == 0
         if code != 0 and not result.error:
             result.error = f"verify failed ({code}): {out[-200:]}"
