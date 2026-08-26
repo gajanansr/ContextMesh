@@ -65,7 +65,26 @@ source ~/.zshrc   # or source ~/.bashrc
 2. **Claude Code Hooks** — installs `PreToolUse`/`PostToolUse` hooks in `~/.claude/settings.json`.
 3. **Persistent Service** — installs a macOS LaunchAgent (or Linux systemd unit) so the proxy auto-starts on login.
 
-From now on, just open any folder and run `claude` normally. ContextMesh handles the rest.
+From now on, the global proxy will intercept Claude Code everywhere.
+
+---
+
+## 🚀 Using ContextMesh in a new project
+
+Once you've run the global `init`, ContextMesh's core proxy features (RTK Output Compression, Anti-Context Flusher, and Token Tracking) are **automatically active for every folder on your computer**. Just type `claude` and you are instantly saving tokens.
+
+**However, to enable the AST Repo-Map Injector:**
+Claude usually wastes tens of thousands of tokens blindly opening and reading files to understand a new codebase. ContextMesh solves this by injecting a dense, pre-computed AST map of your project on turn 1. 
+
+To enable this massive token-saving feature in a brand new project, just index it once before starting Claude:
+
+```bash
+cd /path/to/your/new/project
+contextmesh index .
+
+# Now start claude normally
+claude
+```
 
 ---
 
