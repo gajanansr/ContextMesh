@@ -254,22 +254,44 @@ def create_app() -> FastAPI:
 
     @app.get("/stats")
     async def get_stats():
+        """Stats driven entirely by proxy_measurements — no MCP needed."""
         db = get_db()
         try:
-            sessions = await db.fetchone("SELECT COUNT(*) as count FROM sessions")
+            # Proxy-driven stats (source of truth)
+            pm = await db.fetchone("""
+                SELECT
+                    COUNT(*)                             AS turns,
+                    COUNT(DISTINCT session_id)           AS sessions,
+                    SUM(original_input_tokens)           AS original_tokens,
+                    SUM(input_tokens)                    AS actual_tokens,
+                    SUM(rtk_tokens_saved)                AS rtk_saved,
+                    SUM(flush_tokens_saved)              AS flush_saved,
+                    SUM(output_tokens)                   AS output_tokens
+                FROM proxy_measurements
+            """)
+            # MCP-based graph stats (bonus, may be 0 if MCP not used)
             nodes = await db.fetchone("SELECT COUNT(*) as count FROM nodes")
-            tokens = await db.fetchone("SELECT SUM(tokens_saved) as total FROM token_savings")
-            # Also count proxy-only turns (where session_id = 'proxy_session')
-            proxy_turns = await db.fetchone("SELECT COUNT(*) as count FROM token_savings")
-            proxy_saved = await db.fetchone(
-                "SELECT SUM(accumulated_session_tokens - routed_tokens) as saved FROM token_savings"
-            )
+
+            turns       = pm["turns"]       or 0
+            sessions    = pm["sessions"]    or 0
+            original    = pm["original_tokens"]  or 0
+            actual      = pm["actual_tokens"]    or 0
+            rtk_saved   = pm["rtk_saved"]   or 0
+            flush_saved = pm["flush_saved"] or 0
+            total_saved = rtk_saved + flush_saved
+            # Cost: $3/MTok input (default)
+            cost_saved  = (total_saved / 1_000_000) * 3.0
+
             return {
-                "session_count": sessions["count"] if sessions else 0,
-                "node_count": nodes["count"] if nodes else 0,
-                "total_tokens_saved": (tokens["total"] or 0) if tokens else 0,
-                "proxy_turns_tracked": proxy_turns["count"] if proxy_turns else 0,
-                "proxy_tokens_saved": int(proxy_saved["saved"] or 0) if proxy_saved else 0,
+                "turns_tracked":       turns,
+                "sessions_tracked":    sessions,
+                "original_tokens":     original,
+                "actual_tokens":       actual,
+                "rtk_tokens_saved":    rtk_saved,
+                "flush_tokens_saved":  flush_saved,
+                "total_tokens_saved":  total_saved,
+                "cost_saved_usd":      round(cost_saved, 4),
+                "node_count":          nodes["count"] if nodes else 0,
             }
         except Exception as e:
             logger.error("Error getting stats: %s", e)
@@ -277,41 +299,54 @@ def create_app() -> FastAPI:
 
     @app.get("/savings")
     async def get_savings_global():
-        """Global token savings summary across all sessions."""
+        """Global savings summary — reads from proxy_measurements."""
         db = get_db()
         try:
-            rows = await db.fetchall("SELECT * FROM token_savings")
-            sessions = await db.fetchall("SELECT COUNT(*) as count FROM sessions")
-            session_count = sessions[0]["count"] if sessions else 0
-            if not rows:
+            pm = await db.fetchone("""
+                SELECT
+                    COUNT(*)                             AS total_turns,
+                    COUNT(DISTINCT session_id)           AS session_count,
+                    SUM(original_input_tokens)           AS total_accumulated_tokens,
+                    SUM(input_tokens)                    AS total_routed_tokens,
+                    SUM(rtk_tokens_saved + flush_tokens_saved) AS total_tokens_saved,
+                    SUM(rtk_tokens_saved + flush_tokens_saved) AS total_net_tokens_saved
+                FROM proxy_measurements
+            """)
+            if not pm or not pm["total_turns"]:
                 return {
-                    "session_count": session_count,
-                    "total_turns": 0, "total_accumulated_tokens": 0,
-                    "total_routed_tokens": 0, "total_tokens_saved": 0,
-                    "total_net_tokens_saved": 0, "avg_compression_ratio": 1.0,
-                    "total_cost_saved_usd": 0.0, "best_turn_savings": 0,
+                    "session_count": 0, "total_turns": 0,
+                    "total_accumulated_tokens": 0, "total_routed_tokens": 0,
+                    "total_tokens_saved": 0, "total_net_tokens_saved": 0,
+                    "avg_compression_ratio": 1.0, "total_cost_saved_usd": 0.0,
+                    "best_turn_savings": 0,
                 }
-            tot_accum = sum(r["accumulated_session_tokens"] for r in rows)
-            tot_routed = sum(r["routed_tokens"] for r in rows)
-            tot_saved = sum(r["tokens_saved"] for r in rows)
-            tot_net = sum(r["net_tokens_saved"] for r in rows)
-            cost_saved = sum(r["cost_saved_usd"] for r in rows)
-            best = max((r["tokens_saved"] for r in rows), default=0)
-            avg_ratio = (tot_routed / tot_accum) if tot_accum > 0 else 1.0
+            tot_accum  = pm["total_accumulated_tokens"] or 0
+            tot_routed = pm["total_routed_tokens"]      or 0
+            tot_saved  = pm["total_tokens_saved"]       or 0
+            avg_ratio  = (tot_routed / tot_accum) if tot_accum > 0 else 1.0
+            cost_saved = (tot_saved / 1_000_000) * 3.0
+
+            # Best single turn
+            best_row = await db.fetchone("""
+                SELECT MAX(rtk_tokens_saved + flush_tokens_saved) AS best
+                FROM proxy_measurements
+            """)
             return {
-                "session_count": session_count,
-                "total_turns": len(rows),
+                "session_count":           pm["session_count"] or 0,
+                "total_turns":             pm["total_turns"]   or 0,
                 "total_accumulated_tokens": tot_accum,
-                "total_routed_tokens": tot_routed,
-                "total_tokens_saved": tot_saved,
-                "total_net_tokens_saved": tot_net,
-                "avg_compression_ratio": avg_ratio,
-                "total_cost_saved_usd": cost_saved,
-                "best_turn_savings": best,
+                "total_routed_tokens":     tot_routed,
+                "total_tokens_saved":      tot_saved,
+                "total_net_tokens_saved":  tot_saved,
+                "avg_compression_ratio":   avg_ratio,
+                "total_cost_saved_usd":    round(cost_saved, 4),
+                "best_turn_savings":       best_row["best"] if best_row else 0,
             }
         except Exception as e:
             logger.error("Error getting global savings: %s", e)
             raise HTTPException(status_code=500, detail=str(e))
+
+
 
     @app.get("/savings/{session_id}")
     async def get_savings(session_id: str):

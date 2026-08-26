@@ -221,6 +221,9 @@ CREATE TABLE IF NOT EXISTS proxy_measurements (
     output_tokens                INTEGER DEFAULT 0,
     cache_creation_input_tokens  INTEGER DEFAULT 0,
     cache_read_input_tokens      INTEGER DEFAULT 0,
+    original_input_tokens        INTEGER DEFAULT 0,  -- tokens before RTK compression
+    rtk_tokens_saved             INTEGER DEFAULT 0,  -- tokens crushed by RTK compressor
+    flush_tokens_saved           INTEGER DEFAULT 0,  -- tokens removed by context flusher
     -- Derived
     total_input_with_cache       INTEGER GENERATED ALWAYS AS
                                      (input_tokens + cache_read_input_tokens) STORED,
