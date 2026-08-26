@@ -219,3 +219,37 @@ def test_recall_respects_budget(db, tmp_path):
     context = build_recall_context(db, "/proj", "what next", exclude_session="s2", budget_chars=400)
 
     assert len(context) < 1200  # budget governs entries; header/footer are fixed
+
+
+def test_error_node_keeps_the_message_not_the_command(tmp_path):
+    """Errors are recalled to warn; the message is the signal, not the pipeline."""
+    noisy = "ls -a ~/.claude/ | head -20; echo '--- files ---'; ls -la x 2>&1 | head"
+    t = _transcript(
+        tmp_path,
+        _tool_use("Bash", {"command": noisy}),
+        _tool_result(is_error=True, content="line one\nline two\nfatal: not a git repository"),
+    )
+    node = next(n for n in extract_nodes(t, "s", "/p") if n.node_type is NodeType.ERROR)
+
+    assert "fatal: not a git repository" in node.content
+    assert len(node.content) < 200
+    assert node.metadata["command"].startswith("ls -a")
+
+
+def test_error_prefers_the_exception_line_over_the_tail(tmp_path):
+    t = _transcript(
+        tmp_path,
+        _tool_use("Bash", {"command": "pytest"}),
+        _tool_result(is_error=True, content="ImportError: no module named x\n  ...\nexit 1"),
+    )
+    node = next(n for n in extract_nodes(t, "s", "/p") if n.node_type is NodeType.ERROR)
+    assert "ImportError" in node.content
+
+
+def test_errorless_failure_is_not_recorded(tmp_path):
+    t = _transcript(
+        tmp_path,
+        _tool_use("Bash", {"command": "true"}),
+        _tool_result(is_error=True, content="   \n  "),
+    )
+    assert not [n for n in extract_nodes(t, "s", "/p") if n.node_type is NodeType.ERROR]
