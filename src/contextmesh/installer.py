@@ -285,17 +285,14 @@ def full_install(project_path: str) -> None:
     Full transparent installation — like RTK/Headroom.
     After this, just running `claude` routes through ContextMesh automatically.
     """
-    console.print("\n[bold]Step 1/4:[/bold] Injecting shell environment...")
+    console.print("\n[bold]Step 1/3:[/bold] Injecting shell environment...")
     modified_profile = inject_shell_env()
 
-    console.print("\n[bold]Step 2/4:[/bold] Installing Claude Code hooks...")
+    console.print("\n[bold]Step 2/3:[/bold] Installing Claude Code hooks...")
     inject_claude_hooks()
 
-    console.print("\n[bold]Step 3/4:[/bold] Installing persistent proxy service...")
+    console.print("\n[bold]Step 3/3:[/bold] Installing persistent proxy service...")
     install_proxy_service()
-
-    console.print("\n[bold]Step 4/4:[/bold] Connecting MCP server...")
-    setup_mcp_for_project(project_path)
 
     console.print("\n[bold green]✨ ContextMesh is now fully transparent![/bold green]")
     console.print("Just run [bold]claude[/bold] normally — no wrapper needed.")
@@ -309,4 +306,11 @@ def full_uninstall() -> None:
     remove_shell_env()
     remove_claude_hooks()
     uninstall_proxy_service()
+    
+    # Clean up the legacy MCP server if it exists
+    try:
+        subprocess.run(["claude", "mcp", "remove", "contextmesh"], capture_output=True)
+    except Exception:
+        pass
+        
     console.print("\n[green]✓ ContextMesh uninstalled.[/green]")
