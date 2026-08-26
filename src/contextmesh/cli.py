@@ -113,9 +113,10 @@ def stop(stop_all: bool) -> None:
             console.print("[dim]Daemon is not running (port 8765)[/dim]")
 
     if not stopped_any:
-        console.print("[yellow]Nothing to stop.[/yellow]")
+        console.print("[yellow]No ContextMesh services are currently running.[/yellow]")
     else:
-        console.print("\n[bold]ContextMesh stopped.[/bold] Run [bold]contextmesh start[/bold] + [bold]contextmesh proxy[/bold] to restart.")
+        console.print("\n[bold green]✓ Services stopped successfully.[/bold green]")
+        console.print("[dim]To restart the proxy engine, run: contextmesh proxy &[/dim]")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -331,11 +332,10 @@ def install_mac() -> None:
 
 @main.command()
 def init() -> None:
-    """Transparent 1-click setup — works like RTK/Headroom. No wrapper needed after this."""
+    """Global 1-click setup. Run this once per machine."""
     from contextmesh.installer import full_install
-    project_path = str(Path.cwd())
-    console.print(f"[bold]Initializing ContextMesh for {Path(project_path).name}...[/bold]\n")
-    full_install(project_path)
+    console.print("[bold]Initializing ContextMesh globally for your machine...[/bold]\n")
+    full_install()
 
 
 @main.command()
