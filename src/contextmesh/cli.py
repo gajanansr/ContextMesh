@@ -343,6 +343,14 @@ def status() -> None:
                 f"Nodes: {s.get('node_count', 0)} | "
                 f"Tokens saved: {s.get('total_tokens_saved', 0):,}"
             )
+            proxy_turns = s.get("proxy_turns_tracked", 0)
+            proxy_saved = s.get("proxy_tokens_saved", 0)
+            if proxy_turns > 0:
+                console.print(
+                    f"  [bold green]RTK Proxy:[/bold green] "
+                    f"{proxy_turns} turns tracked | "
+                    f"~{proxy_saved:,} tokens compressed"
+                )
         except Exception:
             pass
     except httpx.ConnectError:
