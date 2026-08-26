@@ -226,7 +226,13 @@ def run(payload_b64: str, session: str) -> None:
         return
 
     # 2. Execute locally
-    proc = subprocess.run(command, shell=True, capture_output=True, text=True)
+    import sys
+    try:
+        proc = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired as e:
+        print(f"ContextMesh Error: Command timed out after 5 minutes.\n{e.output}")
+        sys.exit(124)
+        
     raw_output = proc.stdout
     if proc.stderr:
         raw_output += f"\n[STDERR]\n{proc.stderr}"
@@ -234,13 +240,19 @@ def run(payload_b64: str, session: str) -> None:
     if not raw_output.strip():
         raw_output = "(Command executed successfully with no output)"
 
-    # 3. Compress (RTK style)
+    # 3. Compress (RTK style) to out-of-band digest
     original_chars = len(raw_output)
     if original_chars > 12_000:
+        import hashlib, os
+        digest = hashlib.md5(command.encode()).hexdigest()[:8]
+        out_dir = get_config().data_dir / "outputs"
+        out_dir.mkdir(exist_ok=True)
+        out_file = out_dir / f"{digest}.txt"
+        out_file.write_text(raw_output)
+        
         compressed = (
             raw_output[:3000] 
-            + f"\n\n... [ContextMesh RTK Compressor: {original_chars - 6000} chars removed to save tokens] ...\n\n" 
-            + raw_output[-3000:]
+            + f"\n\n... [ContextMesh RTK Compressor: Full output saved to {out_file} to save tokens. Use `cat` or `head`/`tail` on that file to read the rest.] ...\n" 
         )
     else:
         compressed = raw_output
@@ -253,14 +265,19 @@ def run(payload_b64: str, session: str) -> None:
     try:
         db_path = str(get_config().data_dir / "contextmesh.db")
         
-        # Try to inject Repomap first (even if DB locks, we can just read the file)
+        # Inject RepoMap ONLY on the very first tool call of the session
         try:
-            # We'll just always inject it for the first tool call of the session
-            # Claude's session id changes each run. 
-            repomap = _build_repomap_from_db(db_path)
-            if repomap:
-                final_output = repomap + "\n\n=== COMMAND OUTPUT ===\n" + final_output
-        except Exception:
+            con = sqlite3.connect(db_path, timeout=5)
+            turn_count = con.execute("SELECT COUNT(*) FROM proxy_measurements WHERE session_id = ?", (session,)).fetchone()[0]
+            con.close()
+            
+            if turn_count == 0:
+                import os
+                repomap = _build_repomap_from_db(db_path, os.getcwd())
+                if repomap:
+                    final_output = "[ContextMesh: Injected full codebase RepoMap to prevent blind exploration. See earlier in output.]\n\n=== COMMAND OUTPUT ===\n" + final_output
+                    final_output = repomap + "\n\n" + final_output
+        except Exception as e:
             pass
 
         con = sqlite3.connect(db_path, timeout=5)
@@ -285,6 +302,7 @@ def run(payload_b64: str, session: str) -> None:
 
     # 5. Output to Claude
     print(final_output)
+    sys.exit(proc.returncode)
 
 
 

@@ -26,7 +26,7 @@ SURFACED_TYPES = {
 }
 
 
-def _build_repomap_from_db(db_path: str) -> str | None:
+def _build_repomap_from_db(db_path: str, project_path: str) -> str | None:
     """
     Synchronously reads repo_nodes from SQLite and builds a dense
     structural map string. Returns None if the repo hasn't been indexed yet.
@@ -35,7 +35,7 @@ def _build_repomap_from_db(db_path: str) -> str | None:
         con = sqlite3.connect(db_path, timeout=5)
         con.row_factory = sqlite3.Row
         rows = con.execute(
-            "SELECT name, type, file_path, start_line FROM repo_nodes ORDER BY file_path, start_line"
+            "SELECT name, repo_node_type as type, file_path, start_line FROM repo_nodes WHERE project_path = ? ORDER BY file_path, start_line", (project_path,)
         ).fetchall()
         con.close()
     except Exception as e:
@@ -105,7 +105,8 @@ def inject_repomap_into_system_prompt(payload: dict, db_path: str) -> dict:
         # Not the first turn — skip
         return payload
 
-    repomap = _build_repomap_from_db(db_path)
+    import os
+    repomap = _build_repomap_from_db(db_path, os.getcwd())
     if not repomap:
         logger.debug("[Injector] No repomap available — repo not indexed yet")
         return payload
