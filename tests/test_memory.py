@@ -309,3 +309,16 @@ def test_unresolved_issues_survive_the_gate(db, tmp_path):
                                    exclude_session="s2", min_score=0.99)
 
     assert "UNRESOLVED" in context
+
+
+def test_case_differing_paths_are_the_same_project(db, tmp_path):
+    """macOS and Windows are case-insensitive but case-preserving.
+
+    Reaching a project via ~/documents/proj instead of ~/Documents/proj
+    resolves to a different string and split one project into two memory
+    silos -- which is exactly how the freshly installed build came up empty.
+    """
+    nodes = extract_nodes(_transcript(tmp_path / "t", _user("work worth remembering")), "s1", "/Users/x/Documents/Proj")
+    save_nodes(db, "s1", "/Users/x/Documents/Proj", nodes)
+
+    assert len(load_project_nodes(db, "/users/x/documents/proj")) == 1

@@ -34,6 +34,12 @@ def normalize_project(project_path: str | Path) -> str:
     the hook is handed, and recall silently returns nothing -- silently,
     because the hook swallows every exception by design. Both sides normalise
     through here so the comparison cannot drift.
+
+    Resolving does not fix case. macOS and Windows are case-insensitive but
+    case-preserving, so `~/documents/proj` and `~/Documents/proj` are the same
+    directory yet resolve to different strings, splitting one project into two
+    memory silos. Lookups therefore compare COLLATE NOCASE rather than
+    lowercasing here, which would corrupt paths on case-sensitive filesystems.
     """
     try:
         return str(Path(project_path).expanduser().resolve())
@@ -59,6 +65,7 @@ def ensure_session(con: sqlite3.Connection, session_id: str, project_path: str) 
     existing = con.execute(
         "SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)
     ).fetchone()
+
     if existing:
         con.execute(
             "UPDATE sessions SET last_active = ? WHERE session_id = ?",
@@ -115,7 +122,7 @@ def load_project_nodes(
         sql = (
             "SELECT n.* FROM nodes n"
             " JOIN sessions s ON n.session_id = s.session_id"
-            " WHERE s.project_path = ?"
+            " WHERE s.project_path = ? COLLATE NOCASE"
         )
         params: list = [normalize_project(project_path)]
         if exclude_session:

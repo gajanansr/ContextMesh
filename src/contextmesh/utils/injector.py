@@ -35,7 +35,7 @@ def _build_repomap_from_db(db_path: str, project_path: str) -> str | None:
         con = sqlite3.connect(db_path, timeout=5)
         con.row_factory = sqlite3.Row
         rows = con.execute(
-            "SELECT name, repo_node_type as type, file_path, start_line FROM repo_nodes WHERE project_path = ? ORDER BY file_path, start_line", (project_path,)
+            "SELECT name, repo_node_type as type, file_path, start_line FROM repo_nodes WHERE project_path = ? COLLATE NOCASE ORDER BY file_path, start_line", (project_path,)
         ).fetchall()
         con.close()
     except Exception as e:
