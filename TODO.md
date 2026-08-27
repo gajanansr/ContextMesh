@@ -12,9 +12,12 @@ Prompt caching alone already saves 85.6%; every claim is a delta on top of that.
 - [x] Fix `contextmesh run` 300s timeout: it kills long commands AND discards
       all output. Data loss, not a nuisance. Make it configurable, keep partial
       output, report the timeout to the model instead of swallowing it.
-- [ ] Merge `bench/measurement-core` into main
-- [ ] Bump to 0.10.0, build, reinstall via pipx
-- [ ] Verify installed hooks register all three events on a real session
+- [x] Merge `bench/measurement-core` into main
+- [x] Bump to 0.10.0, build, reinstall via pipx
+- [x] Verify installed hooks register all three events on a real session
+- [x] Fix case-sensitive project matching — found by dogfooding the install,
+      which injected nothing because ~/documents and ~/Documents were two
+      separate silos
 
 ## 2. Make the features actually pay off
 - [~] Gate memory injection on relevance score. IMPLEMENTED BUT OFF —
@@ -30,7 +33,7 @@ Prompt caching alone already saves 85.6%; every claim is a delta on top of that.
       position inside the cached prefix.
 
 ## 3. Tell the truth about it
-- [ ] Rewrite README: it still documents the deleted network proxy, port 8099,
+- [x] Rewrite README: it still documents the deleted network proxy, port 8099,
       and "100% accurate" API-header sniffing. Claim what is measured — fewer
       turns at equal cost — not "90% fewer tokens".
 
