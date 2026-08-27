@@ -105,6 +105,31 @@ Prompt caching alone already saves 85.6%; every claim is a delta on top of that.
       48 verified. `bench/results/crosstool-2026-08-28.json`. Two findings,
       one about us and one about Headroom.
 
+- [x] Diagnose WHY injection costs so much, and test the proposed fix.
+      `bench/run_position_bench.py`, 3 arms x 3 replicates, identical ~440
+      token payload, only the hook event varying:
+        none              cache_read 62,124  cache_write   350  billed  6,916
+        UserPromptSubmit  cache_read 51,690  cache_write 2,854  billed 10,881
+        SessionStart      cache_read 51,688  cache_write 2,899  billed 10,972
+      MY HYPOTHESIS WAS WRONG. I predicted UserPromptSubmit was a
+      cache-hostile position and SessionStart would be cheaper. It is not:
+      +3,965 vs +4,055 billed, a 90-token difference that is noise. Moving the
+      injection point does nothing.
+      What is real is the mechanism and its size. Injecting anything early in a
+      session converts cache reads into cache writes (reads bill 0.1x, 1h
+      writes 2.0x, a 20x spread on the moved tokens), and the billed cost is a
+      multiple of the payload:
+        position bench    440 tokens -> +3,965   =  9.0x
+        repomap bench   2,650 tokens -> +16,870  =  6.4x
+        crosstool mem     470 tokens -> +10,916  = 23.2x
+      Amplification is not a fixed constant, so do not quote one; what holds
+      across every dataset is that it is large and always greater than 1.
+      Consequence: payload size is the only lever we have. There is no
+      position that makes injection cheap, so a block must justify roughly an
+      order of magnitude more than its own token count in saved work. That is
+      the bar memory clears on curated memory and fails on accumulated memory,
+      and the bar the RepoMap has failed three times.
+
 - [ ] URGENT — memory is a significant COST on non-curated memory.
       Cross-tool run, n=12 pairs, delivery verified 0/12 off, 11/12 on:
         cost   +32.0%  CI [+0.0097, +0.1009]   significant
