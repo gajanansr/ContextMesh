@@ -22,9 +22,29 @@ import sys
 # changes. Also a kill switch when the hook misbehaves mid-session.
 DISABLE_ENV_VAR = "CONTEXTMESH_DISABLE"
 
+# The two injected blocks are independently switchable. Users may want memory
+# without a RepoMap (or the reverse), and the benchmark needs to vary one at a
+# time -- measuring them together cannot say which one paid.
+NO_REPOMAP_ENV_VAR = "CONTEXTMESH_NO_REPOMAP"
+NO_MEMORY_ENV_VAR = "CONTEXTMESH_NO_MEMORY"
+
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in _TRUTHY
+
 
 def is_disabled() -> bool:
-    return os.environ.get(DISABLE_ENV_VAR, "").strip().lower() in {"1", "true", "yes", "on"}
+    return _flag(DISABLE_ENV_VAR)
+
+
+def repomap_enabled() -> bool:
+    return not _flag(NO_REPOMAP_ENV_VAR)
+
+
+def memory_enabled() -> bool:
+    return not _flag(NO_MEMORY_ENV_VAR)
 
 
 def _db_path() -> str:
@@ -86,21 +106,23 @@ def handle_user_prompt_submit(data: dict) -> None:
     # The RepoMap belongs here rather than on the first Bash result, where it
     # used to live. There it never arrived if a session opened with Read or
     # Grep, and when it did arrive the agent had already chosen what to do.
-    try:
-        repomap = _build_repomap_from_db(db_path, project_path)
-        if repomap:
-            blocks.append(repomap)
-    except Exception:
-        pass
+    if repomap_enabled():
+        try:
+            repomap = _build_repomap_from_db(db_path, project_path)
+            if repomap:
+                blocks.append(repomap)
+        except Exception:
+            pass
 
-    context = build_recall_context(
-        db_path=db_path,
-        project_path=project_path,
-        prompt=data.get("prompt") or "",
-        exclude_session=session_id,
-    )
-    if context:
-        blocks.append(context)
+    if memory_enabled():
+        context = build_recall_context(
+            db_path=db_path,
+            project_path=project_path,
+            prompt=data.get("prompt") or "",
+            exclude_session=session_id,
+        )
+        if context:
+            blocks.append(context)
 
     if blocks:
         print("\n\n".join(blocks))

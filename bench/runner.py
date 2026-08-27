@@ -31,10 +31,16 @@ from pathlib import Path
 
 from bench.transcript import SessionCost, parse_session
 
-# arm name -> environment overlay applied to the child process
+# arm name -> environment overlay applied to the child process.
+#
+# The repomap arms hold memory off in both directions. Varying two injected
+# blocks at once cannot say which one paid for itself, and the RepoMap is 7.7x
+# the size of the memory block, so it needs isolating.
 ARMS: dict[str, dict[str, str]] = {
     "on": {},
     "off": {"CONTEXTMESH_DISABLE": "1"},
+    "repomap": {"CONTEXTMESH_NO_MEMORY": "1"},
+    "norepomap": {"CONTEXTMESH_NO_MEMORY": "1", "CONTEXTMESH_NO_REPOMAP": "1"},
 }
 
 
