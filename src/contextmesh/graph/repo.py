@@ -53,6 +53,18 @@ class RepoGraph:
             stats["classes"] += (after_cl["c"] - before_cl["c"]) if after_cl and before_cl else 0
             stats["edges"] += (after_eg["c"] - before_eg["c"]) if after_eg and before_eg else 0
 
+        # Rank files by cross-file reference centrality so the RepoMap can
+        # spend its token budget on what the codebase actually depends on,
+        # rather than on whatever sorts first alphabetically -- the reason a
+        # benchmark measured the unranked map as a net cost. See ranking.py.
+        try:
+            from contextmesh.graph.ranking import apply_file_ranks
+
+            stats["ranked_nodes"] = await apply_file_ranks(str(self.project_path), self.db)
+        except Exception:
+            logger.warning("Ranking failed; RepoMap will fall back to unranked order", exc_info=True)
+            stats["ranked_nodes"] = 0
+
         return stats
 
     async def index_file(self, file_path: Path) -> None:
