@@ -1,4 +1,5 @@
 import logging
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 from tree_sitter_language_pack import get_parser
@@ -8,6 +9,22 @@ from contextmesh.models.edges import RepoEdge, EdgeType
 from contextmesh.store.db import Database
 
 logger = logging.getLogger(__name__)
+
+# AST node types that carry an identifier worth counting as a reference.
+# Covers the languages in `RepoGraph.extensions`; an unknown type simply
+# contributes nothing rather than erroring.
+IDENTIFIER_NODE_TYPES = frozenset({
+    "identifier",
+    "type_identifier",
+    "field_identifier",
+    "property_identifier",
+    "shorthand_property_identifier",
+    "namespace_identifier",
+})
+
+# Below this length an identifier is too common to carry signal ("id", "fn",
+# "err") and only adds noise to the reference graph.
+MIN_REF_NAME_LENGTH = 4
 
 class RepoGraph:
     def __init__(self, project_path: Path, db: Database):
@@ -29,6 +46,7 @@ class RepoGraph:
         
         # Clear existing nodes for this project to prevent duplicates
         await self.db.execute("DELETE FROM repo_nodes WHERE project_path = ?", (str(self.project_path),))
+        await self.db.execute("DELETE FROM repo_refs WHERE project_path = ?", (str(self.project_path),))
 
         for path in self.project_path.rglob("*"):
             if not path.is_file():
@@ -53,17 +71,15 @@ class RepoGraph:
             stats["classes"] += (after_cl["c"] - before_cl["c"]) if after_cl and before_cl else 0
             stats["edges"] += (after_eg["c"] - before_eg["c"]) if after_eg and before_eg else 0
 
-        # Rank files by cross-file reference centrality so the RepoMap can
-        # spend its token budget on what the codebase actually depends on,
-        # rather than on whatever sorts first alphabetically -- the reason a
-        # benchmark measured the unranked map as a net cost. See ranking.py.
-        try:
-            from contextmesh.graph.ranking import apply_file_ranks
-
-            stats["ranked_nodes"] = await apply_file_ranks(str(self.project_path), self.db)
-        except Exception:
-            logger.warning("Ranking failed; RepoMap will fall back to unranked order", exc_info=True)
-            stats["ranked_nodes"] = 0
+        # Ranking is no longer computed here. It is personalized to the user's
+        # prompt, so it has to run at recall time -- see graph/ranking.py. What
+        # indexing owes it is the reference data (repo_refs), written per file
+        # above.
+        row = await self.db.fetchone(
+            "SELECT COUNT(*) as c FROM repo_refs WHERE project_path = ?",
+            (str(self.project_path),),
+        )
+        stats["refs"] = row["c"] if row else 0
 
         return stats
 
@@ -165,6 +181,33 @@ class RepoGraph:
                 traverse(child)
 
         traverse(root)
+
+        # Identifier references, for RepoMap ranking. repo_nodes records what a
+        # file defines; this records what it uses. An edge from user to definer
+        # is what makes PageRank meaningful -- without refs there is no graph,
+        # only a list.
+        #
+        # Collected from AST identifier nodes rather than by regex over the raw
+        # text, so occurrences inside strings and comments do not count as
+        # references.
+        refs: Counter[str] = Counter()
+
+        def collect_refs(node):
+            if node.type in IDENTIFIER_NODE_TYPES:
+                name = content_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+                if len(name) >= MIN_REF_NAME_LENGTH:
+                    refs[name] += 1
+            for child in node.children:
+                collect_refs(child)
+
+        collect_refs(root)
+
+        if refs:
+            await self.db.executemany(
+                "INSERT OR REPLACE INTO repo_refs (project_path, file_path, name, ref_count)"
+                " VALUES (?, ?, ?, ?)",
+                [(str(self.project_path), rel_path, name, count) for name, count in refs.items()],
+            )
 
         for sym in symbols:
             rn = RepoNode(

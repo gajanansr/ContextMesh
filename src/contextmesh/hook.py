@@ -128,7 +128,10 @@ def handle_user_prompt_submit(data: dict) -> None:
     # Grep, and when it did arrive the agent had already chosen what to do.
     if repomap_enabled():
         try:
-            repomap = _build_repomap_from_db(db_path, project_path)
+            # The prompt drives PageRank personalization -- without it the map
+            # is the same for every question, which is the configuration two
+            # benchmarks measured as a net cost.
+            repomap = _build_repomap_from_db(db_path, project_path, data.get("prompt") or "")
             if repomap:
                 blocks.append(repomap)
         except Exception:

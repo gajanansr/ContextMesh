@@ -6,7 +6,7 @@ All JSON blobs stored as TEXT.
 Embeddings stored as BLOB (numpy float32 array bytes).
 """
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 CREATE_SCHEMA_SQL = """
 PRAGMA journal_mode=WAL;
@@ -131,6 +131,28 @@ CREATE TABLE IF NOT EXISTS repo_edges (
 
 CREATE INDEX IF NOT EXISTS idx_repo_edges_source ON repo_edges(source_id);
 CREATE INDEX IF NOT EXISTS idx_repo_edges_target ON repo_edges(target_id);
+
+-- ─────────────────────────────────────────────
+-- Identifier references (per file), for RepoMap ranking
+-- ─────────────────────────────────────────────
+-- Which identifiers each file *uses*, as opposed to repo_nodes which records
+-- what each file *defines*. Ranking needs both: an edge runs from the file
+-- referencing a name to the file defining it, and PageRank over that graph is
+-- what surfaces the code a codebase actually depends on.
+--
+-- Stored per file rather than as repo_edges rows because the graph is rebuilt
+-- at recall time with personalization from the user's prompt, so the edges
+-- themselves are query-dependent and cannot be precomputed.
+CREATE TABLE IF NOT EXISTS repo_refs (
+    project_path TEXT NOT NULL,
+    file_path    TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    ref_count    INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (project_path, file_path, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_repo_refs_project ON repo_refs(project_path);
+CREATE INDEX IF NOT EXISTS idx_repo_refs_name ON repo_refs(name);
 
 -- ─────────────────────────────────────────────
 -- Embeddings (session + repo nodes)

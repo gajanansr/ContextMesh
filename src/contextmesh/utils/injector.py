@@ -40,17 +40,21 @@ def _rank_of(metadata_json: str | None) -> float:
         return 0.0
 
 
-def _build_repomap_from_db(db_path: str, project_path: str) -> str | None:
+def _build_repomap_from_db(db_path: str, project_path: str, prompt: str = "") -> str | None:
     """
     Synchronously reads repo_nodes from SQLite and builds a dense
     structural map string. Returns None if the repo hasn't been indexed yet.
 
-    Selection is by PageRank over cross-file symbol references (see
-    graph/ranking.py), not file-path order. A benchmark measured the
-    alphabetical version as a net cost (+45.6%) with no significant reduction
-    in turns: the budget was spent on whichever file sorted first rather than
-    on what the task needed. Symbols are chosen by rank first, then displayed
-    grouped by file for readability.
+    Symbols are selected by PageRank personalized to `prompt` (see
+    graph/ranking.py), so the same codebase produces a different map for a
+    different question. Two prior orderings were benchmarked and both lost:
+    alphabetical by file path (+45.6% cost, no turn benefit) and a static
+    global rank (+74.6%). Both chose content without reference to what was
+    being asked.
+
+    Falls back to file-path order when ranking is unavailable -- an index
+    predating repo_refs, a graph too large to rank, or PageRank failing to
+    converge -- so an un-rankable project still gets a map.
     """
     try:
         con = sqlite3.connect(db_path, timeout=5)
@@ -60,12 +64,12 @@ def _build_repomap_from_db(db_path: str, project_path: str) -> str | None:
             "FROM repo_nodes WHERE project_path = ? COLLATE NOCASE",
             (project_path,),
         ).fetchall()
-        con.close()
     except Exception as e:
         logger.debug("[Injector] Could not read repo_nodes: %s", e)
         return None
 
     if not rows:
+        con.close()
         return None
 
     candidates = []
@@ -83,14 +87,29 @@ def _build_repomap_from_db(db_path: str, project_path: str) -> str | None:
             "name": row["name"],
             "start_line": row["start_line"] or 0,
             "kind": kind,
-            "rank": _rank_of(row["metadata"]),
+            "rank": 0.0,
         })
 
     if not candidates:
+        con.close()
         return None
 
+    try:
+        from contextmesh.graph.ranking import rank_symbols
+
+        ranks = {(s.file_path, s.name): s.rank for s in rank_symbols(con, project_path, prompt)}
+    except Exception as e:  # ranking is an optimisation, never a hard dependency
+        logger.debug("[Injector] Ranking unavailable, using file order: %s", e)
+        ranks = {}
+    finally:
+        con.close()
+
+    for c in candidates:
+        c["rank"] = ranks.get((c["file_path"], c["name"]), 0.0)
+
     # Highest-rank symbols first; ties broken by file path then line number so
-    # output is deterministic across runs.
+    # output is deterministic across runs and an unranked project degrades to
+    # plain alphabetical order.
     candidates.sort(key=lambda c: (-c["rank"], c["file_path"] or "", c["start_line"]))
 
     lines = ["[ContextMesh RepoMap — injected automatically to save tokens on file reads]"]
