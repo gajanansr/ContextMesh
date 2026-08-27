@@ -8,11 +8,18 @@ repo seeded by a scripted prior session. The seeded memory is built once and
 snapshotted; every replicate starts from that snapshot, otherwise replicate N
 would see the memory of replicates 0..N-1 and the arms would drift apart.
 
-These tasks are authored, not third-party, and two of the three were written
+These tasks are authored, not third-party, and three of the four were written
 expecting memory to help. That is a real bias and it is why `control` exists:
 memory is irrelevant to it, so a "win" there means something other than
 memory is producing the difference -- cache ordering being the usual culprit.
 Read the control first.
+
+The three memory-relevant tasks each exercise a different node type on
+purpose, rather than three variations on the same recall: `convention` needs a
+DECISION (where something lives), `deadend` needs an UNRESOLVED_ISSUE (what
+already broke), `backoff` needs a SOLUTION (how something was decided to
+behave). A corpus that only ever tested one memory mechanism could look like
+it generalises when it has only shown one narrow case works.
 """
 
 from __future__ import annotations
@@ -58,6 +65,17 @@ SEED_NODES = [
         ),
         "files": ["utils/net.py"],
         "importance": 0.95,
+    },
+    {
+        "node_type": "solution",
+        "content": (
+            "Immediate retries hammered the endpoint during an outage and made "
+            "it worse. Retries in this project must back off exponentially -- "
+            "wait base_delay * (2 ** attempt) between attempts, never retry "
+            "immediately."
+        ),
+        "files": ["utils/net.py"],
+        "importance": 0.9,
     },
 ]
 
@@ -154,10 +172,11 @@ def reset_command(fixture: Fixture, data_dir: Path) -> str:
 
 
 def build_tasks(fixture: Fixture, data_dir: Path, settings: Path) -> list[Task]:
-    """The three benchmark tasks.
+    """The four benchmark tasks.
 
-    convention  -- needs to know settings live in settings.py, not config.py
-    deadend     -- needs to know about the circular import already hit
+    convention  -- needs a DECISION: settings live in settings.py, not config.py
+    deadend     -- needs an UNRESOLVED_ISSUE: the circular import already hit
+    backoff     -- needs a SOLUTION: retries must back off exponentially
     control     -- unrelated to anything in memory; the falsification check
     """
     common = {
@@ -194,6 +213,22 @@ def build_tasks(fixture: Fixture, data_dir: Path, settings: Path) -> list[Task]:
             verify=(
                 "grep -q 'def fetch_with_retries' utils/net.py && "
                 "! grep -qE '^(from settings|import settings)' utils/net.py"
+            ),
+            **common,
+        ),
+        Task(
+            task_id="backoff",
+            prompt=(
+                "Add a `retry_with_backoff(fn, max_attempts=3)` helper to "
+                "utils/net.py that retries `fn` on failure, following how this "
+                "project has decided retries should behave. Then reply DONE."
+            ),
+            # Passes only if it actually backs off exponentially, not merely
+            # if the function exists -- an agent could name it "backoff" and
+            # still retry immediately, which memory is what would prevent.
+            verify=(
+                "grep -q 'def retry_with_backoff' utils/net.py && "
+                "grep -qE '(2\\s*\\*\\*|\\*\\*\\s*2|pow\\(2)' utils/net.py"
             ),
             **common,
         ),
