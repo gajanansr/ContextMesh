@@ -50,6 +50,33 @@ def _hook_settings(workdir: Path) -> Path:
     return settings
 
 
+def _acquire_lock(workdir_parent: Path) -> Path:
+    """Refuse to run when another instance is live.
+
+    Two concurrent runs share a workdir, and each one's reset does
+    `rm -rf <data_dir>`. The loser's seeded database is deleted mid-session,
+    recall silently returns nothing, and the run reports a confident null for
+    a treatment that was wiped out from under it. That happened twice here
+    before the cause was found.
+    """
+    lock = workdir_parent / "cm-membench.lock"
+    if lock.exists():
+        try:
+            pid = int(lock.read_text().strip())
+            os.kill(pid, 0)          # signal 0 just tests existence
+        except (ValueError, ProcessLookupError):
+            lock.unlink(missing_ok=True)   # stale
+        except PermissionError:
+            pass                     # exists, owned by another user
+        else:
+            raise SystemExit(
+                f"another benchmark is running (pid {pid}). "
+                f"Wait for it, or remove {lock} if it is stale."
+            )
+    lock.write_text(str(os.getpid()))
+    return lock
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--replicates", type=int, default=3)
