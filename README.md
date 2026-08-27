@@ -60,12 +60,26 @@ It costs significantly more and does not significantly reduce turns, even on
 tasks written specifically to reward knowing where code lives. **It is
 therefore off by default**; set `CONTEXTMESH_REPOMAP=1` to opt in.
 
-This is not evidence that repomaps do not work — Aider's does. It is evidence
-that *this* one does not, and the reason is probably ranking: the map is
-ordered alphabetically by file path and truncated at 10k characters, so it
-spends its budget on whatever sorts first rather than on what the task needs.
-Aider ranks symbols by PageRank over the reference graph against the current
-context. Until that lands here, the map is a 2,500-token tax.
+The suspected cause was ranking: the map was ordered alphabetically by file
+path and truncated at 10k characters, spending its budget on whatever sorted
+first instead of what the task needed. That was fixed — symbols are now
+selected by PageRank over cross-file symbol references, the same idea Aider
+uses — and the benchmark was re-run (`bench/results/repomap-ranked-2026-08-28.json`,
+same corpus, delivery confirmed 9/9 / 0/9):
+
+| | turns | cost |
+|---|---|---|
+| Overall (ranked) | −0.33 (n.s.) | **+74.6%** [+0.022, +0.036] |
+
+Worse. Ranking fixed *what* the map contains, correctly, but not the deeper
+problem: it still costs a fixed ~2,500 tokens whether its contents are
+well-chosen or not, and that tax has to be earned back in saved turns on every
+session — including tasks that don't need broad architectural context at all.
+Better sorting inside a fixed budget doesn't fix a tax that shouldn't always
+be paid. The likely next step is making the cost variable — skip injection on
+small codebases, size the budget to the task, or gate it on relevance the way
+memory should be — not further reordering. Both results stand; the map stays
+off by default either way.
 
 ---
 
