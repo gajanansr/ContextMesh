@@ -101,9 +101,39 @@ Prompt caching alone already saves 85.6%; every claim is a delta on top of that.
       embeddings model in the daemon. NOTE: Headroom does exactly this at
       <50ms with local embeddings, so the 28s torch import I called a blocker
       was a bad implementation path, not a real constraint.
-- [ ] Run the cross-tool comparison now that headroom 0.36.5 and rtk 0.46.0
-      are installed. `bench/arms.py` has the abstraction; the runner still
-      needs to honour command_prefix/setup/teardown.
+- [x] Run the cross-tool comparison. Harness works end to end; 48 runs, all
+      48 verified. `bench/results/crosstool-2026-08-28.json`. Two findings,
+      one about us and one about Headroom.
+
+- [ ] URGENT — memory is a significant COST on non-curated memory.
+      Cross-tool run, n=12 pairs, delivery verified 0/12 off, 11/12 on:
+        cost   +32.0%  CI [+0.0097, +0.1009]   significant
+        billed +40.5%  CI [+3997, +17836]      significant
+        turns  -0.58   CI [-1.84, +0.67]       no significant difference
+      This does NOT contradict the -28.1% turns result; it isolates a
+      condition that result never tested. The seeded corpus supplies curated,
+      relevant memory. This corpus seeds nothing: memory accrued from the
+      benchmark's own 12 prior sessions -- repeats of the same three prompts
+      plus file-modification noise. So:
+        curated, relevant memory    -> -28.1% turns, cost-neutral
+        memory as it naturally accrues -> +32% cost, no turn benefit
+      Per-task, the control (which memory cannot help) went 12,486 -> 25,853
+      billed input: injection roughly doubled it for nothing.
+      The public claim must be qualified accordingly, and relevance gating is
+      no longer an optimisation -- it is required for the feature to be
+      net-positive outside a curated fixture.
+
+- [ ] Re-run the Headroom comparison with a valid control. The current one is
+      VOID: `--no-optimize` does not disable compression in headroom 0.36.5.
+      A proxy started with that flag, whose banner printed
+      "Optimization: DISABLED", compressed the one request sent to it by 5.0%
+      (1,398 tokens removed). Confirmed not to be shared-stats pollution -- a
+      third proxy on an unused port reported zeros until traffic arrived.
+      Both arms therefore compressed (4.6% vs 4.9%) and the comparison
+      measured compression against compression, which is exactly why every
+      metric came back "no significant difference".
+      Nothing can currently be said about whether Headroom helps or hurts.
+      Worth reporting upstream; it is an open-source project.
 - [ ] Publish methodology as a results page. Nobody in this category can
       currently prove their numbers — that is the opening. Everything needed
       exists in bench/results/; this is a writing task now, not a measurement
