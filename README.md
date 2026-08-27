@@ -25,19 +25,33 @@ hooks live versus inert and bills every token at its true rate — cache reads a
 0.1×, cache writes at 1.25× or 2.0× depending on TTL. Raw data is in
 `bench/results/`.
 
-Session memory, 3 tasks × 3 replicates, delivery-verified, all runs passing
-their task check:
+Session memory, re-measured after broadening the corpus from two memory
+mechanisms to three (a DECISION, an UNRESOLVED_ISSUE, and a SOLUTION —
+distinct node types, not three variations on the same recall), delivery
+verified 0/12 baseline / 12/12 treatment, 23 of 24 runs passing:
 
 | | turns | 95% CI | cost |
 |---|---|---|---|
-| Tasks memory applies to | **−17.9%** | [−1.62, −0.04] | no significant difference |
-| Task memory can't help (control) | 0.00 | [0.00, 0.00] | +$0.027 (n.s.) |
+| Two original mechanisms (n=6) | **−28.1%** | [−2.79, −0.21] | no significant difference |
+| Task memory can't help (control) | 0.00 | [0.00, 0.00] | +$0.021 (n.s.) |
 
-**What that means:** memory gets Claude to the answer in roughly one fewer
-turn, at the same price. It is not a cost saving — the tokens it injects
-roughly cancel the turns it saves. When nothing relevant is stored it is a
-small pure cost, which is why gating recall on relevance is the next
-priority.
+**What that means:** memory gets Claude to the answer in fewer turns, at the
+same price. It is not a cost saving — the tokens it injects roughly cancel the
+turns it saves. When nothing relevant is stored it is a small pure cost across
+two separate runs of the control task, which is why gating recall on
+relevance is the next priority.
+
+**A third mechanism, reported separately because it isn't as clean:** a task
+needing a recalled SOLUTION (retries must back off exponentially, not retry
+immediately) showed a much larger effect — but one `off`-arm replicate failed
+its verification outright and another spiked to 16 turns and $0.27, against a
+flat 4 turns and ~$0.05 every time with memory. Pooling all three mechanisms
+gives turns −45.6% (CI [−6.50, −0.004]) — technically significant, but that
+number is carried by one extreme outlier and I'm not publishing it as a
+headline. What I will stand behind: without memory, this task was
+*inconsistent* — sometimes it failed, sometimes it took much longer — and with
+memory it wasn't, once. That's a claim about reliability, not mean turns, and
+it's a mode of failure a compression-only tool has no mechanism to prevent.
 
 **What it does not mean:** prompt caching alone already cuts cost ~85% on a
 typical session, measured across 241 local sessions. Every number above is a
