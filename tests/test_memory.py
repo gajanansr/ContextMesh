@@ -278,3 +278,34 @@ def test_trailing_slash_does_not_split_a_project(db, tmp_path):
     save_nodes(db, "s1", str(tmp_path), nodes)
 
     assert len(load_project_nodes(db, str(tmp_path) + "/")) == 1
+
+
+def test_relevance_gate_can_drop_unrelated_memory(db, tmp_path):
+    """The gate works when a threshold is supplied; it is only off by default."""
+    nodes = extract_nodes(
+        _transcript(tmp_path, _user("migrate the billing module to Stripe")), "s1", "/proj"
+    )
+    save_nodes(db, "s1", "/proj", nodes)
+
+    kept = build_recall_context(db, "/proj", "migrate billing to Stripe",
+                                exclude_session="s2", min_score=0.0)
+    dropped = build_recall_context(db, "/proj", "what is the weather",
+                                   exclude_session="s2", min_score=0.99)
+
+    assert "Stripe" in kept
+    assert dropped == ""
+
+
+def test_unresolved_issues_survive_the_gate(db, tmp_path):
+    """A known dead end is worth stating even when it scores low."""
+    t = _transcript(
+        tmp_path,
+        _tool_use("Read", {"file_path": "src/cursed.py"}),
+        _tool_result(is_error=True, content="ImportError: circular import"),
+    )
+    save_nodes(db, "s1", "/proj", extract_nodes(t, "s1", "/proj"))
+
+    context = build_recall_context(db, "/proj", "totally unrelated question",
+                                   exclude_session="s2", min_score=0.99)
+
+    assert "UNRESOLVED" in context
