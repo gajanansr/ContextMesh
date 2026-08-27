@@ -1,11 +1,63 @@
+import re
 import numpy as np
 from datetime import datetime, timezone
 from contextmesh.config import RouterConfig
 from contextmesh.models.nodes import NodeType
 
+# Words too common to indicate that two texts are about the same thing.
+_STOPWORDS = frozenset("""
+a an and are as at be but by for from has have how i if in into is it its of on
+or that the then there these this to was were what when where which who will
+with you your do does did not no yes can could should would please add make use
+using file files code line lines run
+""".split())
+
+_WORD = re.compile(r"[a-z][a-z0-9_]{2,}")
+
+# Crude suffix stripping so "migration" matches "migrate" and "settings"
+# matches "setting". Not a real stemmer, but it costs nothing and recovers the
+# most common near-misses.
+# Longest first, so "migration" reduces past "ation" rather than stopping at
+# "s". Verb and noun forms must land on the same stem or variants never match:
+# "migration" -> "migr" is useless unless "migrate" -> "migr" too.
+_SUFFIXES = ("ations", "ation", "ates", "ate", "ments", "ment",
+             "ings", "ing", "ers", "er", "ies", "ied", "es", "ed", "s")
+
+
+def _stem(word: str) -> str:
+    for suffix in _SUFFIXES:
+        if len(word) > len(suffix) + 2 and word.endswith(suffix):
+            return word[: -len(suffix)]
+    return word
+
+
+def _terms(text: str) -> set[str]:
+    return {
+        _stem(w) for w in _WORD.findall((text or "").lower()) if w not in _STOPWORDS
+    }
+
 class ContextScorer:
     def __init__(self, config: RouterConfig):
         self.config = config
+
+    def lexical_score(self, query_text: str, node_text: str) -> float:
+        """Word-overlap similarity, used when no embedding is available.
+
+        The semantic weight was dead: `query_text` was accepted and ignored,
+        and embeddings are never populated, so every node scored identically
+        regardless of what the user asked. That made relevance gating
+        impossible -- an unrelated prompt and a related one produced the same
+        score. This is a cheap stand-in that costs no model load on the recall
+        path, which runs before the user's first turn.
+        """
+        query_words = _terms(query_text)
+        node_words = _terms(node_text)
+        if not query_words or not node_words:
+            return 0.0
+        overlap = len(query_words & node_words)
+        # Normalised by the query, so a long stored node cannot dilute a
+        # strong match, and capped so one repeated word cannot dominate.
+        return min(1.0, overlap / len(query_words))
 
     def recency_score(self, created_at_iso: str) -> float:
         try:
@@ -57,9 +109,14 @@ class ContextScorer:
     def score(self, candidate_nodes: list[dict], current_task_files: list[str], query_embedding: np.ndarray | None, graph_proximity: dict[str, float], query_text: str) -> list[tuple[dict, float]]:
         scored = []
         for node in candidate_nodes:
-            # Semantic score
+            # Semantic score: embeddings when present, lexical overlap otherwise.
             semantic = 0.0
-            if query_embedding is not None and "embedding_vec" in node:
+            if query_embedding is None:
+                semantic = self.lexical_score(
+                    query_text,
+                    f"{node.get('summary') or ''} {node.get('content') or ''}",
+                )
+            elif query_embedding is not None and "embedding_vec" in node:
                 vec = node["embedding_vec"]
                 if vec is not None:
                     # cosine similarity

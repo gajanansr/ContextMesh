@@ -228,16 +228,11 @@ def run(payload_b64: str, session: str) -> None:
 
     # 2. Execute locally
     import sys
-    try:
-        proc = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=300)
-    except subprocess.TimeoutExpired as e:
-        print(f"ContextMesh Error: Command timed out after 5 minutes.\n{e.output}")
-        sys.exit(124)
-        
-    raw_output = proc.stdout
-    if proc.stderr:
-        raw_output += f"\n[STDERR]\n{proc.stderr}"
-    
+    from contextmesh.utils.executor import execute
+
+    execution = execute(command)
+    raw_output = execution.output
+
     if not raw_output.strip():
         raw_output = "(Command executed successfully with no output)"
 
@@ -247,7 +242,7 @@ def run(payload_b64: str, session: str) -> None:
         import hashlib, os
         digest = hashlib.md5(command.encode()).hexdigest()[:8]
         out_dir = get_config().data_dir / "outputs"
-        out_dir.mkdir(exist_ok=True)
+        out_dir.mkdir(parents=True, exist_ok=True)
         out_file = out_dir / f"{digest}.txt"
         out_file.write_text(raw_output)
         
@@ -303,7 +298,7 @@ def run(payload_b64: str, session: str) -> None:
 
     # 5. Output to Claude
     print(final_output)
-    sys.exit(proc.returncode)
+    sys.exit(execution.returncode)
 
 
 

@@ -23,6 +23,30 @@ from contextmesh.models.nodes import NodeType
 # against the file reads it prevents.
 DEFAULT_BUDGET_CHARS = 3_600
 
+# Gating recall on relevance is the obvious optimisation and it is currently
+# disabled, deliberately.
+#
+# The benchmark showed injection is pure cost when nothing stored pertains to
+# the session: turns changed by exactly 0.00 across every replicate of the
+# control task while costing ~$0.027. So the tax is real.
+#
+# Separating relevant from irrelevant, however, needs semantic similarity.
+# Measured alternatives, both insufficient: file overlap scores both a related
+# and an unrelated prompt at 0.300, because neither prompt names a file; word
+# overlap (with stemming) scores them 0.300 and 0.300, because the prompt says
+# "conventions" where the memory says "settings". That gap is exactly what
+# embeddings exist to close, and sentence-transformers takes 28s just to
+# import torch -- unusable in a hook that runs before the user's first turn.
+#
+# The path is a warm model in the daemon with the hook falling back to
+# ungated recall when it is not running. Until then a threshold would drop
+# useful memory as readily as useless memory, so the default is off.
+MIN_RELEVANCE_SCORE = 0.0
+
+# Unresolved issues are exempt. A known dead end is worth stating even when it
+# scores low, because the cost of walking back into it dwarfs its tokens.
+ALWAYS_RECALL_TYPES = frozenset({NodeType.UNRESOLVED_ISSUE.value})
+
 # Path-like tokens in the user's prompt drive the file-overlap score.
 _PATH_TOKEN = re.compile(r"[\w./-]+\.[A-Za-z0-9]{1,5}\b")
 
@@ -85,15 +109,26 @@ def build_recall_context(
     prompt: str,
     exclude_session: str | None = None,
     budget_chars: int = DEFAULT_BUDGET_CHARS,
+    min_score: float = MIN_RELEVANCE_SCORE,
 ) -> str:
-    """Build the memory block, or an empty string when there is nothing worth saying."""
+    """Build the memory block, or an empty string when there is nothing worth saying.
+
+    Returning "" is a real outcome, not a failure: injecting unrelated history
+    measurably costs tokens and saves nothing.
+    """
     candidates = load_project_nodes(db_path, project_path, exclude_session)
     if not candidates:
         return ""
 
     ranked = _score_nodes(candidates, prompt)
-    by_id = {n["node_id"]: score for n, score in ranked}
-    ordered = [n for n, _ in ranked]
+    relevant = [
+        (node, score) for node, score in ranked
+        if score >= min_score or node.get("node_type") in ALWAYS_RECALL_TYPES
+    ]
+    if not relevant:
+        return ""
+
+    ordered = [n for n, _ in relevant]
 
     lines: list[str] = []
     used = 0
@@ -132,7 +167,7 @@ def build_recall_context(
     if not lines:
         return ""
 
-    sessions = len({n["session_id"] for n in candidates})
+    sessions = len({n["session_id"] for n in ordered})
     header = (
         f"[ContextMesh memory — {len(included)} items recalled from "
         f"{sessions} earlier session(s) in this project]"
