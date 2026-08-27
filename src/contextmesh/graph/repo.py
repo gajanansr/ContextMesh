@@ -22,10 +22,13 @@ class RepoGraph:
             ".go": "go",
             ".rs": "rust"
         }
-        self.skip_dirs = {"node_modules", "__pycache__", ".git", "dist", "build", "venv", ".venv"}
+        self.skip_dirs = {"node_modules", "__pycache__", ".git", "dist", "build", "venv", ".venv", "site-packages", ".tox"}
 
     async def index_project(self) -> dict:
         stats = {"files": 0, "functions": 0, "classes": 0, "edges": 0}
+        
+        # Clear existing nodes for this project to prevent duplicates
+        await self.db.execute("DELETE FROM repo_nodes WHERE project_path = ?", (str(self.project_path),))
 
         for path in self.project_path.rglob("*"):
             if not path.is_file():
@@ -62,11 +65,11 @@ class RepoGraph:
             return
 
         try:
-            content = file_path.read_text(encoding="utf-8")
+            content_bytes = file_path.read_bytes()
         except Exception:
             return
 
-        tree = parser.parse(content.encode("utf-8"))
+        tree = parser.parse(content_bytes)
         root = tree.root_node
 
         # Relative path from project root for storage
@@ -93,7 +96,7 @@ class RepoGraph:
                     if name_node:
                         symbols.append({
                             "type": NodeType.REPO_FUNCTION,
-                            "name": content[name_node.start_byte:name_node.end_byte],
+                            "name": content_bytes[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="replace"),
                             "start": node.start_point[0],
                             "end": node.end_point[0],
                         })
@@ -102,7 +105,7 @@ class RepoGraph:
                     if name_node:
                         symbols.append({
                             "type": NodeType.REPO_CLASS,
-                            "name": content[name_node.start_byte:name_node.end_byte],
+                            "name": content_bytes[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="replace"),
                             "start": node.start_point[0],
                             "end": node.end_point[0],
                         })
@@ -112,7 +115,7 @@ class RepoGraph:
                     if name_node:
                         symbols.append({
                             "type": NodeType.REPO_FUNCTION,
-                            "name": content[name_node.start_byte:name_node.end_byte],
+                            "name": content_bytes[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="replace"),
                             "start": node.start_point[0],
                             "end": node.end_point[0],
                         })
@@ -121,7 +124,7 @@ class RepoGraph:
                     if name_node:
                         symbols.append({
                             "type": NodeType.REPO_CLASS,
-                            "name": content[name_node.start_byte:name_node.end_byte],
+                            "name": content_bytes[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="replace"),
                             "start": node.start_point[0],
                             "end": node.end_point[0],
                         })
@@ -131,7 +134,7 @@ class RepoGraph:
                     if name_node:
                         symbols.append({
                             "type": NodeType.REPO_FUNCTION,
-                            "name": content[name_node.start_byte:name_node.end_byte],
+                            "name": content_bytes[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="replace"),
                             "start": node.start_point[0],
                             "end": node.end_point[0],
                         })
@@ -141,7 +144,7 @@ class RepoGraph:
                     if name_node:
                         symbols.append({
                             "type": NodeType.REPO_FUNCTION,
-                            "name": content[name_node.start_byte:name_node.end_byte],
+                            "name": content_bytes[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="replace"),
                             "start": node.start_point[0],
                             "end": node.end_point[0],
                         })
