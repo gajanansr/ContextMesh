@@ -1,221 +1,222 @@
-"""Tests for RepoMap ranking.
+"""Tests for query-personalized RepoMap ranking.
 
-The benchmark measured the alphabetical, un-ranked map as a net cost
-(bench/results/repomap-2026-08-27.json: +45.6% cost, no significant turn
-reduction). These tests pin the replacement: a file that is actually
-referenced by other files in the project must outrank one that is not,
-regardless of where either sorts alphabetically.
+Two benchmarked failures shaped this: alphabetical ordering (+45.6% cost, no
+turn benefit) and a static global rank (+74.6%, worse). Both picked content
+without reference to the question being asked. The property that matters most
+here — and the one neither predecessor had — is that the *same* codebase must
+rank differently for different prompts.
 """
 
-import json
+import sqlite3
 
 import pytest
 
-from contextmesh.graph.ranking import apply_file_ranks, compute_file_ranks
-from contextmesh.models.edges import EdgeType, RepoEdge
-from contextmesh.models.nodes import NodeType, RepoNode
-from contextmesh.store.db import Database
-from contextmesh.utils.injector import _build_repomap_from_db, _rank_of
+from contextmesh.graph.ranking import (
+    _identifier_multiplier,
+    mentioned_identifiers,
+    mentioned_paths,
+    rank_symbols,
+)
+from contextmesh.store.schema import CREATE_SCHEMA_SQL
+from contextmesh.utils.injector import _build_repomap_from_db
+
+PROJECT = "/proj"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(tmp_path / "cm.db")
-    await database.connect()
-    yield database
-    await database.close()
+def con(tmp_path):
+    connection = sqlite3.connect(tmp_path / "cm.db")
+    connection.row_factory = sqlite3.Row
+    connection.executescript(CREATE_SCHEMA_SQL)
+    connection.commit()
+    yield connection
+    connection.close()
 
 
-async def _seed(db, project_path, files: dict[str, str]):
-    """Write files to disk and insert matching repo_nodes rows.
-
-    `files` maps relative path -> source text. Each top-level `def NAME(` in
-    the text becomes a repo_function node so ranking has symbols to work with.
-    """
-    import re
-
-    for rel_path, text in files.items():
-        full = project_path / rel_path
-        full.parent.mkdir(parents=True, exist_ok=True)
-        full.write_text(text)
-
-        node = RepoNode(
-            project_path=str(project_path),
-            repo_node_type=NodeType.REPO_FILE,
-            name=full.name,
-            file_path=rel_path,
-        )
-        await db.insert("repo_nodes", node.to_db_row())
-
-        for match in re.finditer(r"^def (\w+)\(", text, re.MULTILINE):
-            fn = RepoNode(
-                project_path=str(project_path),
-                repo_node_type=NodeType.REPO_FUNCTION,
-                name=match.group(1),
-                file_path=rel_path,
-                start_line=text[: match.start()].count("\n") + 1,
-            )
-            await db.insert("repo_nodes", fn.to_db_row())
-
-
-async def test_referenced_file_outranks_unreferenced_file(db, tmp_path):
-    """The property the benchmark result demands: relevance must separate files."""
-    await _seed(db, tmp_path, {
-        "core.py": "def process_widgets():\n    return 1\n",
-        "caller_a.py": "from core import process_widgets\nprocess_widgets()\n",
-        "caller_b.py": "from core import process_widgets\nprocess_widgets()\n",
-        "orphan.py": "def unrelated_helper():\n    return 2\n",
-    })
-
-    ranks = await compute_file_ranks(str(tmp_path), db)
-
-    assert ranks["core.py"] > ranks["orphan.py"]
-
-
-async def test_empty_project_ranks_nothing(db, tmp_path):
-    assert await compute_file_ranks(str(tmp_path), db) == {}
-
-
-async def test_files_with_no_cross_references_rank_nothing(db, tmp_path):
-    """Two isolated files must not error, and must not fabricate a signal."""
-    await _seed(db, tmp_path, {
-        "a.py": "def alpha():\n    return 1\n",
-        "b.py": "def bravo():\n    return 2\n",
-    })
-    assert await compute_file_ranks(str(tmp_path), db) == {}
-
-
-async def test_short_names_are_excluded_as_noise(db, tmp_path):
-    """'get' or 'run' appearing everywhere must not manufacture false centrality."""
-    await _seed(db, tmp_path, {
-        "core.py": "def run():\n    return 1\n",
-        "caller.py": "run()\nrun()\nrun()\n",
-    })
-    assert await compute_file_ranks(str(tmp_path), db) == {}
-
-
-async def test_apply_file_ranks_writes_into_metadata(db, tmp_path):
-    await _seed(db, tmp_path, {
-        "core.py": "def process_widgets():\n    return 1\n",
-        "caller.py": "from core import process_widgets\nprocess_widgets()\n",
-    })
-
-    updated = await apply_file_ranks(str(tmp_path), db)
-    assert updated > 0
-
-    rows = await db.fetchall(
-        "SELECT file_path, metadata FROM repo_nodes WHERE file_path = 'core.py'"
-    )
-    ranks = [json.loads(r["metadata"])["rank"] for r in rows]
-    assert all(r > 0 for r in ranks)
-
-
-async def test_apply_file_ranks_preserves_existing_metadata(db, tmp_path):
-    """Writing rank must not clobber other metadata a node already carries."""
-    await _seed(db, tmp_path, {
-        "core.py": "def process_widgets():\n    return 1\n",
-        "caller.py": "from core import process_widgets\nprocess_widgets()\n",
-    })
-    await db.execute(
-        "UPDATE repo_nodes SET metadata = ? WHERE file_path = 'core.py'",
-        (json.dumps({"custom": "keep-me"}),),
-    )
-    await db.commit()
-
-    await apply_file_ranks(str(tmp_path), db)
-
-    rows = await db.fetchall(
-        "SELECT metadata FROM repo_nodes WHERE file_path = 'core.py' AND repo_node_type = 'repo_function'"
-    )
-    meta = json.loads(rows[0]["metadata"])
-    assert meta["custom"] == "keep-me"
-    assert meta["rank"] > 0
-
-
-async def test_apply_file_ranks_is_a_noop_when_nothing_to_rank(db, tmp_path):
-    assert await apply_file_ranks(str(tmp_path), db) == 0
-
-
-# ── injector: rank-ordered selection ────────────────────────────────────────
-
-def test_rank_of_reads_stored_score():
-    assert _rank_of(json.dumps({"rank": 0.42})) == 0.42
-
-
-def test_rank_of_defaults_to_zero_for_unranked_nodes():
-    """A project indexed before ranking shipped must degrade, not crash."""
-    assert _rank_of(None) == 0.0
-    assert _rank_of("{}") == 0.0
-    assert _rank_of("not json") == 0.0
-
-
-def _insert_repomap_row(con, project, file_path, name, node_type, line, rank=None):
-    metadata = json.dumps({"rank": rank}) if rank is not None else "{}"
+def add_definition(con, file_path, name, kind="repo_function", line=1):
     con.execute(
         "INSERT INTO repo_nodes (node_id, project_path, repo_node_type, name,"
-        " file_path, start_line, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (f"{file_path}:{name}:{line}", project, node_type, name, file_path, line, metadata),
+        " file_path, start_line, metadata) VALUES (?, ?, ?, ?, ?, ?, '{}')",
+        (f"{file_path}:{name}:{line}", PROJECT, kind, name, file_path, line),
+    )
+    con.commit()
+
+
+def add_reference(con, file_path, name, count=1):
+    con.execute(
+        "INSERT OR REPLACE INTO repo_refs (project_path, file_path, name, ref_count)"
+        " VALUES (?, ?, ?, ?)",
+        (PROJECT, file_path, name, count),
+    )
+    con.commit()
+
+
+# ── prompt parsing ──────────────────────────────────────────────────────────
+
+def test_identifiers_extracted_from_prompt():
+    idents = mentioned_identifiers("please fix the ContextScorer and extract_nodes")
+    assert "ContextScorer" in idents
+    assert "extract_nodes" in idents
+
+
+def test_paths_extracted_from_prompt():
+    assert mentioned_paths("edit src/app.py and tests/test_x.py") == {
+        "src/app.py", "tests/test_x.py"
+    }
+
+
+# ── identifier weighting ────────────────────────────────────────────────────
+
+def test_identifier_named_in_prompt_weighs_more():
+    named = _identifier_multiplier("process_widgets", {"process_widgets"}, 1)
+    unnamed = _identifier_multiplier("process_widgets", set(), 1)
+    assert named > unnamed
+
+
+def test_distinctive_names_weigh_more_than_short_ones():
+    """A long multi-word name identifies code; a short one barely narrows anything."""
+    distinctive = _identifier_multiplier("process_widget_batch", set(), 1)
+    plain = _identifier_multiplier("run", set(), 1)
+    assert distinctive > plain
+
+
+def test_private_names_are_downweighted():
+    assert _identifier_multiplier("_helper_method", set(), 1) < _identifier_multiplier(
+        "helper_method", set(), 1
     )
 
 
-@pytest.fixture
-def repomap_db(tmp_path):
-    import sqlite3
+def test_names_defined_everywhere_are_downweighted():
+    """Something defined in 20 files says little about where to look."""
+    rare = _identifier_multiplier("process_widgets", set(), 1)
+    ubiquitous = _identifier_multiplier("process_widgets", set(), 20)
+    assert ubiquitous < rare
 
-    from contextmesh.store.schema import CREATE_SCHEMA_SQL
 
-    path = tmp_path / "repomap.db"
+# ── ranking ─────────────────────────────────────────────────────────────────
+
+def test_referenced_definition_outranks_unreferenced_one(con):
+    add_definition(con, "core.py", "process_widgets")
+    add_definition(con, "orphan.py", "unused_helper")
+    add_reference(con, "caller_a.py", "process_widgets", 3)
+    add_reference(con, "caller_b.py", "process_widgets", 2)
+
+    ranked = rank_symbols(con, PROJECT, "")
+    names = [s.name for s in ranked]
+
+    assert "process_widgets" in names
+    assert names[0] == "process_widgets"
+
+
+def test_the_same_codebase_ranks_differently_per_prompt(con):
+    """The property a static rank cannot have, and the reason it lost."""
+    add_definition(con, "auth.py", "validate_token")
+    add_definition(con, "billing.py", "charge_customer")
+    # Symmetric graph: neither is structurally more central than the other.
+    add_reference(con, "app.py", "validate_token", 5)
+    add_reference(con, "app.py", "charge_customer", 5)
+
+    auth_first = rank_symbols(con, PROJECT, "fix validate_token please")
+    billing_first = rank_symbols(con, PROJECT, "fix charge_customer please")
+
+    assert auth_first[0].name == "validate_token"
+    assert billing_first[0].name == "charge_customer"
+
+
+def test_mentioning_a_file_biases_toward_it(con):
+    add_definition(con, "auth.py", "validate_token")
+    add_definition(con, "billing.py", "charge_customer")
+    add_reference(con, "app.py", "validate_token", 5)
+    add_reference(con, "app.py", "charge_customer", 5)
+
+    ranked = rank_symbols(con, PROJECT, "there is a bug in billing.py")
+
+    assert ranked[0].file_path == "billing.py"
+
+
+def test_no_references_means_no_ranking(con):
+    """Without a reference graph there is nothing to rank; say so, don't guess."""
+    add_definition(con, "core.py", "process_widgets")
+    assert rank_symbols(con, PROJECT, "anything") == []
+
+
+def test_empty_project_ranks_nothing(con):
+    assert rank_symbols(con, PROJECT, "anything") == []
+
+
+def test_missing_refs_table_degrades_quietly(tmp_path):
+    """A project indexed before repo_refs existed must not crash a session."""
+    path = tmp_path / "old.db"
+    con = sqlite3.connect(path)
+    con.row_factory = sqlite3.Row
+    con.executescript(CREATE_SCHEMA_SQL)
+    con.execute("DROP TABLE repo_refs")
+    con.execute(
+        "INSERT INTO repo_nodes (node_id, project_path, repo_node_type, name,"
+        " file_path, start_line, metadata) VALUES ('n1', ?, 'repo_function',"
+        " 'process_widgets', 'core.py', 1, '{}')",
+        (PROJECT,),
+    )
+    con.commit()
+
+    assert rank_symbols(con, PROJECT, "anything") == []
+    con.close()
+
+
+def test_graph_too_large_is_skipped(con, monkeypatch):
+    """Ranking must not spend real time on the user's first turn."""
+    from contextmesh.graph import ranking
+
+    monkeypatch.setattr(ranking, "MAX_GRAPH_FILES", 1)
+    add_definition(con, "a.py", "process_widgets")
+    add_reference(con, "b.py", "process_widgets", 1)
+    add_reference(con, "c.py", "process_widgets", 1)
+
+    assert rank_symbols(con, PROJECT, "") == []
+
+
+# ── injector integration ────────────────────────────────────────────────────
+
+def test_repomap_orders_by_prompt_relevance(tmp_path):
+    path = tmp_path / "cm.db"
+    con = sqlite3.connect(path)
+    con.row_factory = sqlite3.Row
+    con.executescript(CREATE_SCHEMA_SQL)
+    for f, n in (("auth.py", "validate_token"), ("billing.py", "charge_customer")):
+        con.execute(
+            "INSERT INTO repo_nodes (node_id, project_path, repo_node_type, name,"
+            " file_path, start_line, metadata) VALUES (?, ?, 'repo_function', ?, ?, 1, '{}')",
+            (f"{f}:{n}", PROJECT, n, f),
+        )
+        con.execute(
+            "INSERT INTO repo_refs (project_path, file_path, name, ref_count)"
+            " VALUES (?, 'app.py', ?, 5)",
+            (PROJECT, n),
+        )
+    con.commit()
+    con.close()
+
+    auth = _build_repomap_from_db(str(path), PROJECT, "fix validate_token")
+    billing = _build_repomap_from_db(str(path), PROJECT, "fix charge_customer")
+
+    assert auth.index("auth.py") < auth.index("billing.py")
+    assert billing.index("billing.py") < billing.index("auth.py")
+
+
+def test_repomap_without_ranking_falls_back_to_file_order(tmp_path):
+    """No refs indexed: still produce a usable map, just unranked."""
+    path = tmp_path / "cm.db"
     con = sqlite3.connect(path)
     con.executescript(CREATE_SCHEMA_SQL)
-    con.commit()
-    con.close()
-    return path
-
-
-def test_higher_ranked_file_is_listed_first(repomap_db):
-    import sqlite3
-
-    con = sqlite3.connect(repomap_db)
-    _insert_repomap_row(con, "/p", "low.py", "low_fn", "repo_function", 1, rank=0.01)
-    _insert_repomap_row(con, "/p", "high.py", "high_fn", "repo_function", 1, rank=0.9)
+    for f, n in (("b_file.py", "b_fn"), ("a_file.py", "a_fn")):
+        con.execute(
+            "INSERT INTO repo_nodes (node_id, project_path, repo_node_type, name,"
+            " file_path, start_line, metadata) VALUES (?, ?, 'repo_function', ?, ?, 1, '{}')",
+            (f"{f}:{n}", PROJECT, n, f),
+        )
     con.commit()
     con.close()
 
-    repomap = _build_repomap_from_db(str(repomap_db), "/p")
+    repomap = _build_repomap_from_db(str(path), PROJECT, "unrelated question")
 
-    assert repomap.index("high.py") < repomap.index("low.py")
-
-
-def test_unranked_project_falls_back_to_alphabetical(repomap_db):
-    """Old index data with no rank must not crash or reorder unpredictably."""
-    import sqlite3
-
-    con = sqlite3.connect(repomap_db)
-    _insert_repomap_row(con, "/p", "b.py", "b_fn", "repo_function", 1)
-    _insert_repomap_row(con, "/p", "a.py", "a_fn", "repo_function", 1)
-    con.commit()
-    con.close()
-
-    repomap = _build_repomap_from_db(str(repomap_db), "/p")
-
-    assert repomap.index("a.py") < repomap.index("b.py")
-
-
-def test_low_relevance_symbols_are_omitted_not_silently_dropped(repomap_db, monkeypatch):
-    """Budget spends on rank first; what doesn't fit is stated, not hidden."""
-    import sqlite3
-
-    from contextmesh.utils import injector
-
-    monkeypatch.setattr(injector, "MAX_REPOMAP_CHARS", 130)
-
-    con = sqlite3.connect(repomap_db)
-    _insert_repomap_row(con, "/p", "high.py", "important_fn", "repo_function", 1, rank=0.9)
-    _insert_repomap_row(con, "/p", "low.py", "unimportant_fn", "repo_function", 1, rank=0.01)
-    con.commit()
-    con.close()
-
-    repomap = _build_repomap_from_db(str(repomap_db), "/p")
-
-    assert "important_fn" in repomap
-    assert "omitted" in repomap
+    assert repomap.index("a_file.py") < repomap.index("b_file.py")
