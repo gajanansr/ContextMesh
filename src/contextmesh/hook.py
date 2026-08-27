@@ -79,6 +79,19 @@ def handle_user_prompt_submit(data: dict) -> None:
 
     # Only now pay for the scorer's imports.
     from contextmesh.memory.recall import build_recall_context
+    from contextmesh.utils.injector import _build_repomap_from_db
+
+    blocks = []
+
+    # The RepoMap belongs here rather than on the first Bash result, where it
+    # used to live. There it never arrived if a session opened with Read or
+    # Grep, and when it did arrive the agent had already chosen what to do.
+    try:
+        repomap = _build_repomap_from_db(db_path, project_path)
+        if repomap:
+            blocks.append(repomap)
+    except Exception:
+        pass
 
     context = build_recall_context(
         db_path=db_path,
@@ -87,7 +100,10 @@ def handle_user_prompt_submit(data: dict) -> None:
         exclude_session=session_id,
     )
     if context:
-        print(context)
+        blocks.append(context)
+
+    if blocks:
+        print("\n\n".join(blocks))
 
 
 def handle_session_end(data: dict) -> None:

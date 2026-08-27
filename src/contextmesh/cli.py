@@ -261,20 +261,9 @@ def run(payload_b64: str, session: str) -> None:
     try:
         db_path = str(get_config().data_dir / "contextmesh.db")
         
-        # Inject RepoMap ONLY on the very first tool call of the session
-        try:
-            con = sqlite3.connect(db_path, timeout=5)
-            turn_count = con.execute("SELECT COUNT(*) FROM proxy_measurements WHERE session_id = ?", (session,)).fetchone()[0]
-            con.close()
-            
-            if turn_count == 0:
-                import os
-                repomap = _build_repomap_from_db(db_path, os.getcwd())
-                if repomap:
-                    final_output = "[ContextMesh: Injected full codebase RepoMap to prevent blind exploration. See earlier in output.]\n\n=== COMMAND OUTPUT ===\n" + final_output
-                    final_output = repomap + "\n\n" + final_output
-        except Exception as e:
-            pass
+        # The RepoMap is injected at UserPromptSubmit now, not here. On a
+        # tool result it arrived only if the session happened to start with
+        # Bash, and always after the agent had already planned.
 
         con = sqlite3.connect(db_path, timeout=5)
         # Record stat measurement
