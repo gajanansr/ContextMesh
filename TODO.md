@@ -59,14 +59,43 @@ Prompt caching alone already saves 85.6%; every claim is a delta on top of that.
       needs anyway (see the item above) — not better sorting inside a fixed
       budget. Default stays off. Not picking this back up without a new idea
       for *when* to inject, not just *what*.
-- [ ] Broaden the corpus beyond one synthetic fixture and my own authored tasks
+- [x] Broaden the corpus beyond the two original memory mechanisms. Added
+      `backoff`, needing a SOLUTION node rather than a DECISION or an
+      UNRESOLVED_ISSUE — a third mechanism, not a third variation on the same
+      one. `bench/results/memory-broadened-2026-08-28.json`, delivery
+      confirmed 0/12 off / 12/12 on, 23/24 verified.
+      convention+deadend alone (n=6, same shape as the 08-27 result): turns
+      -1.5, CI [-2.79, -0.21], -28.1%, significant — consistent with and
+      slightly stronger than the original -17.9%.
+      Adding backoff (n=8): turns -3.25, CI [-6.50, -0.004], -45.6% —
+      technically significant but fragile: one `off` replicate went
+      unverified and another took 16 turns / $0.27 (vs a flat 4 turns / ~$0.05
+      every time `on`), so the pooled number is carried by a single outlier
+      and I'm not standing behind the -45.6% figure on its own.
+      What I will stand behind: without memory this task was inconsistent —
+      1 of 3 replicates failed outright, another spiked hard — and with memory
+      it was 4 turns and passed, every time. That is a claim about variance
+      and reliability, not mean turns, and it is the kind of thing a
+      compression-only tool cannot offer regardless of ranking or gating.
+      Control: turns 0.00 across all 3 replicates again, cost +$0.021 (n.s.)
+      — the falsification check passes a second time on an expanded corpus.
 - [ ] Re-measure after the gating change; confirm cost-neutral becomes
-      cost-positive
-- [ ] Publish methodology. Nobody in this category can currently prove their
-      numbers — that is the opening.
+      cost-positive. Blocked on the same thing as gating itself: a warm
+      embeddings model in the daemon.
+- [ ] Publish methodology as a results page. Nobody in this category can
+      currently prove their numbers — that is the opening. Everything needed
+      exists in bench/results/; this is a writing task now, not a measurement
+      one.
 
 ## Known limits to keep honest
-- n=6 pairs on the significant result. Real, but barely clear of zero.
+- The clean, standable result is n=6 (convention+deadend). The n=8 pooled
+  figure that includes backoff is real data but fragile — one extreme outlier
+  carries it, and I would not publish -45.6% as a headline on its own.
 - Tasks authored in-house; the control task is the only guard against that.
-- Decisions/hypotheses are not extracted — deterministic extraction cannot see
-  them, and guessing would be worse than omitting them.
+- Decisions/hypotheses beyond DECISION/SOLUTION/UNRESOLVED_ISSUE are not
+  extracted — deterministic extraction cannot see them, and guessing would be
+  worse than omitting them.
+- RepoMap: two negative results now (unranked +45.6%, ranked +74.6%, both
+  significant, neither showing a significant turn benefit). Off by default.
+  Not worth a third attempt without a new idea about *when* to inject, not
+  just *what* or *how ordered*.
