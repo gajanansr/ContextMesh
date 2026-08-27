@@ -122,14 +122,36 @@ def test_third_party_arms_declare_themselves_unverifiable():
     assert all(not a.verifiable for a in THIRD_PARTY_ARMS.values())
 
 
-def test_missing_tools_are_skipped_with_a_reason_not_silently():
-    from bench.arms import check_availability
+def test_missing_tools_are_skipped_with_a_reason_not_silently(monkeypatch):
+    """An absent tool must be named, not quietly dropped from the comparison.
 
-    runnable, skipped = check_availability(["off", "headroom", "rtk"])
+    Uses a synthetic arm rather than a real tool name: asserting that
+    `headroom` is missing encodes whether this machine happens to have it
+    installed, and that assumption broke the moment it was.
+    """
+    from bench import arms
+    from bench.arms import Arm, check_availability
+
+    ghost = Arm(name="ghost", requires=("definitely-not-a-real-binary",))
+    monkeypatch.setitem(arms.ALL_ARMS, "ghost", ghost)
+
+    runnable, skipped = check_availability(["off", "ghost"])
 
     assert "off" in runnable
-    assert any("headroom" in s and "not installed" in s for s in skipped)
-    assert any("rtk" in s for s in skipped)
+    assert "ghost" not in runnable
+    assert any("ghost" in s and "not installed" in s for s in skipped)
+
+
+def test_installed_tools_are_reported_runnable(monkeypatch):
+    from bench import arms
+    from bench.arms import Arm, check_availability
+
+    present = Arm(name="present", requires=("sh",))
+    monkeypatch.setitem(arms.ALL_ARMS, "present", present)
+
+    runnable, _skipped = check_availability(["present"])
+
+    assert "present" in runnable
 
 
 def test_unknown_arm_is_rejected():
