@@ -40,3 +40,41 @@ def test_repomap_arms_are_registered():
     # And the map itself must differ between them.
     assert "CONTEXTMESH_NO_REPOMAP" in ARMS[BASELINE_ARM]
     assert "CONTEXTMESH_NO_REPOMAP" not in ARMS[TREATMENT_ARM]
+
+
+def test_preflight_reports_clean_when_hook_honours_toggles(monkeypatch):
+    import subprocess
+
+    from bench import runner
+
+    monkeypatch.setattr(
+        runner.subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0] if a else [], 0, "", ""),
+    )
+    assert runner.preflight_arms() == []
+
+
+def test_preflight_flags_a_hook_that_ignores_toggles(monkeypatch):
+    """The contamination that leaked the RepoMap into 2 of 9 baseline runs."""
+    import subprocess
+
+    from bench import runner
+
+    monkeypatch.setattr(
+        runner.subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0] if a else [], 0, "x" * 5000, ""),
+    )
+    problems = runner.preflight_arms()
+
+    assert problems
+    assert "reinstall" in problems[0]
+
+
+def test_preflight_tolerates_hook_not_installed(monkeypatch):
+    from bench import runner
+
+    def boom(*a, **k):
+        raise OSError("not found")
+
+    monkeypatch.setattr(runner.subprocess, "run", boom)
+    assert runner.preflight_arms() == []

@@ -13,7 +13,7 @@ from pathlib import Path
 from bench.corpus_repomap import build_fixture, build_tasks, index_fixture
 from bench.report import REPOMAP_MARKER, delivery_report, format_report
 from bench.run_memory_bench import _acquire_lock, _hook_settings
-from bench.runner import run_matrix
+from bench.runner import preflight_arms, run_matrix
 
 BASELINE_ARM = "norepomap"
 TREATMENT_ARM = "repomap"
@@ -35,6 +35,11 @@ def main(argv: list[str] | None = None) -> int:
     if workdir.exists():
         shutil.rmtree(workdir)
     workdir.mkdir(parents=True)
+
+    for problem in preflight_arms():
+        print(f"PREFLIGHT FAILED: {problem}")
+        lock.unlink(missing_ok=True)
+        return 2
 
     fixture = build_fixture(workdir)
     data_dir = workdir / "data"
