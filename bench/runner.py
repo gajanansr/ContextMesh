@@ -116,6 +116,51 @@ class RunResult:
         }
 
 
+def preflight_arms(cwd: Path | None = None) -> list[str]:
+    """Check the globally-installed hook honours the arm env vars.
+
+    `claude --settings` *adds* hooks; it cannot remove the one registered in
+    ~/.claude/settings.json. So the installed binary fires alongside the
+    benchmark's shim and races it for the once-per-session latch. If that
+    binary predates the toggles it injects unconditionally, and the control
+    arm silently receives the treatment -- which is exactly what happened,
+    leaking into 2 of 9 baseline runs before the delivery check caught it.
+
+    Returns a list of problems; empty means the environment is clean.
+    """
+    import json as _json
+
+    problems: list[str] = []
+    payload = _json.dumps({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "contextmesh-preflight",
+        "cwd": str(cwd or Path.cwd()),
+        "prompt": "preflight",
+    })
+
+    for arm, overlay in ARMS.items():
+        if not overlay or overlay.get("CONTEXTMESH_DISABLE"):
+            continue  # nothing suppressed, or the whole hook is off
+        env = dict(os.environ, **overlay)
+        try:
+            proc = subprocess.run(
+                ["contextmesh-hook"], input=payload, capture_output=True,
+                text=True, timeout=60, env=env,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue  # not installed globally; nothing to conflict with
+        suppressed_all = all(
+            overlay.get(f"CONTEXTMESH_NO_{name}") == "1" for name in ("REPOMAP", "MEMORY")
+        )
+        if suppressed_all and proc.stdout.strip():
+            problems.append(
+                f"installed contextmesh-hook ignores {sorted(overlay)} "
+                f"(emitted {len(proc.stdout)} chars for arm {arm!r}); "
+                f"reinstall it before benchmarking"
+            )
+    return problems
+
+
 def find_transcript(session_id: str, config_dir: Path | None = None) -> Path | None:
     """Locate a session transcript by id."""
     if not session_id:

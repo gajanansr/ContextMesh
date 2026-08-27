@@ -13,7 +13,7 @@ from pathlib import Path
 
 from bench.corpus import build_fixture, build_tasks
 from bench.report import MEMORY_MARKER, delivery_report, format_report
-from bench.runner import run_matrix
+from bench.runner import preflight_arms, run_matrix
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -94,6 +94,11 @@ def main(argv: list[str] | None = None) -> int:
     if workdir.exists():
         shutil.rmtree(workdir)
     workdir.mkdir(parents=True)
+
+    for problem in preflight_arms():
+        print(f"PREFLIGHT FAILED: {problem}")
+        lock.unlink(missing_ok=True)
+        return 2
 
     fixture = build_fixture(workdir)
     data_dir = workdir / "data"
