@@ -81,19 +81,31 @@ selected by PageRank over cross-file symbol references, the same idea Aider
 uses — and the benchmark was re-run (`bench/results/repomap-ranked-2026-08-28.json`,
 same corpus, delivery confirmed 9/9 / 0/9):
 
-| | turns | cost |
-|---|---|---|
-| Overall (ranked) | −0.33 (n.s.) | **+74.6%** [+0.022, +0.036] |
+Then re-measured again after porting Aider's *query-personalized* PageRank,
+which biases ranking toward files and identifiers named in the prompt:
 
-Worse. Ranking fixed *what* the map contains, correctly, but not the deeper
-problem: it still costs a fixed ~2,500 tokens whether its contents are
-well-chosen or not, and that tax has to be earned back in saved turns on every
-session — including tasks that don't need broad architectural context at all.
-Better sorting inside a fixed budget doesn't fix a tax that shouldn't always
-be paid. The likely next step is making the cost variable — skip injection on
-small codebases, size the budget to the task, or gate it on relevance the way
-memory should be — not further reordering. Both results stand; the map stays
-off by default either way.
+| Ordering | turns | cost |
+|---|---|---|
+| Alphabetical by file path | −0.33 (n.s.) | **+45.6%** |
+| Static global PageRank | −0.33 (n.s.) | **+74.6%** |
+| Query-personalized PageRank | −0.86 (n.s.) | **+35.9%** [+0.035, +0.121] |
+
+Personalization clearly helped — it roughly halved the cost regression versus
+the static version and produced the largest turn reduction of the three
+(locate-class 12.00 → 10.67 turns, locate-function 5.00 → 4.00). It still did
+not flip the verdict: cost is significantly up, turns are not significantly
+down. *(Caveat: 3 of 18 runs in that third pass died on an API rate limit,
+mostly on the control task, so it carries a weaker falsification check than
+the two clean runs before it.)*
+
+Ranking fixed *what* the map contains — demonstrably. What it can't fix is
+that the map costs a fixed ~2,500 tokens whether or not its contents are
+well-chosen, and that tax must be earned back on every session, including
+tasks needing no architectural context. Better sorting inside a fixed budget
+doesn't fix a tax that shouldn't always be paid. The remaining idea is making
+the cost *variable* — skip small codebases, size the budget to the task, gate
+on relevance — not further reordering. All three results stand; the map stays
+off by default.
 
 ---
 

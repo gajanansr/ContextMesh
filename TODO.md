@@ -79,9 +79,31 @@ Prompt caching alone already saves 85.6%; every claim is a delta on top of that.
       compression-only tool cannot offer regardless of ranking or gating.
       Control: turns 0.00 across all 3 replicates again, cost +$0.021 (n.s.)
       — the falsification check passes a second time on an expanded corpus.
+- [x] Port Aider's query-personalized PageRank and re-measure. THIRD RESULT,
+      BEST OF THE THREE, STILL LOSES:
+      `bench/results/repomap-personalized-2026-08-28.json`.
+        alphabetical      cost +45.6%   turns -0.33 (n.s.)
+        static PageRank   cost +74.6%   turns -0.33 (n.s.)
+        personalized      cost +35.9%   turns -0.86 (n.s.)   <- CI [+0.035,+0.121]
+      Personalization clearly helped — cost regression roughly halved from the
+      static version and the turn reduction is the largest yet (locate-class
+      12.00 -> 10.67, locate-function 5.00 -> 4.00). It still did not flip:
+      cost is significantly up, turns are not significantly down.
+      CAVEAT, and it matters: 3 of 18 runs died on an API limit, all but one
+      of them on the control task (control got 1/3 and 2/3 usable). This run
+      therefore has effectively no falsification check, so it is weaker
+      evidence than the two clean runs before it. The direction is consistent
+      across all three, which is why I am not re-running it a fourth time to
+      chase the control — but it should be stated, not buried.
+      Default stays off.
 - [ ] Re-measure after the gating change; confirm cost-neutral becomes
       cost-positive. Blocked on the same thing as gating itself: a warm
-      embeddings model in the daemon.
+      embeddings model in the daemon. NOTE: Headroom does exactly this at
+      <50ms with local embeddings, so the 28s torch import I called a blocker
+      was a bad implementation path, not a real constraint.
+- [ ] Run the cross-tool comparison now that headroom 0.36.5 and rtk 0.46.0
+      are installed. `bench/arms.py` has the abstraction; the runner still
+      needs to honour command_prefix/setup/teardown.
 - [ ] Publish methodology as a results page. Nobody in this category can
       currently prove their numbers — that is the opening. Everything needed
       exists in bench/results/; this is a writing task now, not a measurement
