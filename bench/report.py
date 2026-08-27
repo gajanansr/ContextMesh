@@ -15,7 +15,7 @@ from __future__ import annotations
 import statistics
 from dataclasses import dataclass
 
-from bench.runner import Matrix, RunResult
+from bench.runner import Matrix, RunResult, find_transcript
 
 # Two-tailed 95% critical values of Student's t by degrees of freedom.
 # A table avoids a scipy dependency for the handful of df a benchmark reaches.
@@ -175,4 +175,65 @@ def format_report(
         "Note: the baseline already includes prompt caching, which reduces cost",
         "~85% on its own. Any delta here is on top of that, not instead of it.",
     ]
+    return "\n".join(lines)
+
+
+# Marker strings the hook writes into an injected block. Delivery is checked
+# against the session transcript rather than a hook-side log, because the
+# transcript is what the model actually received.
+MEMORY_MARKER = "ContextMesh memory"
+REPOMAP_MARKER = "ContextMesh RepoMap"
+
+
+def received_marker(result: RunResult, marker: str) -> bool:
+    """Whether this run's transcript contains an injected block."""
+    path = result.transcript or find_transcript(result.session_id)
+    if not path or not path.exists():
+        return False
+    try:
+        return marker in path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+
+
+def delivery_report(
+    matrix: Matrix,
+    marker: str,
+    label: str,
+    treatment_arm: str = "on",
+    baseline_arm: str = "off",
+) -> str:
+    """Confirm the treatment reached the treatment arm and only that arm.
+
+    Without this, "no significant difference" is ambiguous between "the feature
+    does not help" and "the feature never ran" -- and two runs of this harness
+    reported a confident null for a treatment that had been silently wiped out.
+
+    Zero comparable runs is itself a failure. An earlier version reported 0/0
+    and said nothing, which is the exact silence the check exists to break.
+    """
+    lines = [f"Treatment delivery ({label} present in the session):"]
+    problems = []
+
+    for arm, expected in ((baseline_arm, False), (treatment_arm, True)):
+        runs = [r for r in matrix.for_arm(arm) if not r.cli_error]
+        got = sum(1 for r in runs if received_marker(r, marker))
+        lines.append(
+            f"  {arm:<12} {got}/{len(runs)} runs received it "
+            f"(expected {'all' if expected else 'none'})"
+        )
+        if not runs:
+            problems.append(f"{arm} has no usable runs")
+        elif expected and got < len(runs):
+            problems.append(f"{arm} was missing the treatment in {len(runs) - got} run(s)")
+        elif not expected and got:
+            problems.append(f"{arm} received the treatment in {got} run(s)")
+
+    errored = [r for r in matrix.results if r.cli_error]
+    if errored:
+        lines.append(f"  ({len(errored)} run(s) failed outright and are excluded)")
+
+    if problems:
+        lines += ["", "  INVALID: " + "; ".join(problems) + ".",
+                  "  Any comparison below measures nothing. Fix delivery, re-run."]
     return "\n".join(lines)

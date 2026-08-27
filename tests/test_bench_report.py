@@ -130,3 +130,69 @@ def test_report_mentions_the_caching_baseline():
 def test_percent_change_none_when_baseline_zero():
     c = Comparison("m", "off", "on", 2, 0.0, 1.0, 1.0, 0.5, 1.5)
     assert c.percent_change is None
+
+
+def _run_with_transcript(tmp_path, arm, replicate, text, task="t1"):
+    d = tmp_path / "projects" / "p"
+    d.mkdir(parents=True, exist_ok=True)
+    sid = f"{arm}-{replicate}"
+    (d / f"{sid}.jsonl").write_text(text)
+    r = _run(arm, replicate, 1.0)
+    r.session_id = sid
+    r.transcript = d / f"{sid}.jsonl"
+    return r
+
+
+def test_delivery_report_passes_when_only_treatment_received_it(tmp_path):
+    from bench.report import MEMORY_MARKER, delivery_report
+
+    m = Matrix()
+    m.add(_run_with_transcript(tmp_path, "off", 0, "nothing here"))
+    m.add(_run_with_transcript(tmp_path, "on", 0, f"...{MEMORY_MARKER}..."))
+
+    assert "INVALID" not in delivery_report(m, MEMORY_MARKER, "memory")
+
+
+def test_delivery_report_flags_treatment_that_never_arrived(tmp_path):
+    """The failure that made two earlier runs worthless."""
+    from bench.report import MEMORY_MARKER, delivery_report
+
+    m = Matrix()
+    m.add(_run_with_transcript(tmp_path, "off", 0, "nothing"))
+    m.add(_run_with_transcript(tmp_path, "on", 0, "also nothing"))
+
+    report = delivery_report(m, MEMORY_MARKER, "memory")
+    assert "INVALID" in report
+    assert "missing the treatment" in report
+
+
+def test_delivery_report_flags_leakage_into_the_baseline(tmp_path):
+    from bench.report import MEMORY_MARKER, delivery_report
+
+    m = Matrix()
+    m.add(_run_with_transcript(tmp_path, "off", 0, f"oops {MEMORY_MARKER}"))
+    m.add(_run_with_transcript(tmp_path, "on", 0, f"{MEMORY_MARKER}"))
+
+    assert "INVALID" in delivery_report(m, MEMORY_MARKER, "memory")
+
+
+def test_delivery_report_flags_having_verified_nothing():
+    """0/0 reported as a pass is the silence the check exists to break."""
+    from bench.report import MEMORY_MARKER, delivery_report
+
+    report = delivery_report(Matrix(), MEMORY_MARKER, "memory")
+
+    assert "INVALID" in report
+    assert "no usable runs" in report
+
+
+def test_delivery_report_honours_custom_arm_names(tmp_path):
+    from bench.report import REPOMAP_MARKER, delivery_report
+
+    m = Matrix()
+    m.add(_run_with_transcript(tmp_path, "norepomap", 0, "nothing"))
+    m.add(_run_with_transcript(tmp_path, "repomap", 0, f"{REPOMAP_MARKER} here"))
+
+    report = delivery_report(m, REPOMAP_MARKER, "RepoMap",
+                             treatment_arm="repomap", baseline_arm="norepomap")
+    assert "INVALID" not in report

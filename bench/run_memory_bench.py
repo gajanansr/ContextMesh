@@ -12,7 +12,7 @@ import shutil
 from pathlib import Path
 
 from bench.corpus import build_fixture, build_tasks
-from bench.report import format_report
+from bench.report import MEMORY_MARKER, delivery_report, format_report
 from bench.runner import run_matrix
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -48,68 +48,6 @@ def _hook_settings(workdir: Path) -> Path:
         }
     }, indent=2))
     return settings
-
-
-def _delivery_report(workdir: Path, matrix) -> str:
-    """Confirm the treatment actually reached the treatment arm.
-
-    Without this, "no significant difference" is ambiguous between "the
-    feature does not help" and "the feature never ran".
-    """
-    log = workdir / "hook.log"
-    injected: set[str] = set()
-    if log.exists():
-        for line in log.read_text().splitlines():
-            parts = line.split()
-            if len(parts) == 3 and parts[1] == "UserPromptSubmit" and parts[2] != "0":
-                injected.add(parts[0])
-
-    lines = ["Treatment delivery (memory injected into the prompt):"]
-    ok = True
-    for arm, expect in (("off", False), ("on", True)):
-        runs = [r for r in matrix.for_arm(arm) if not r.cli_error]
-        got = sum(1 for r in runs if r.session_id in injected)
-        lines.append(f"  {arm:<4} {got}/{len(runs)} runs received memory "
-                     f"(expected {'all' if expect else 'none'})")
-        if expect and runs and got < len(runs):
-            ok = False
-        if not expect and got:
-            ok = False
-
-    if not ok:
-        lines += [
-            "",
-            "  INVALID: the treatment was not delivered as intended.",
-            "  Any comparison below measures nothing. Fix delivery, re-run.",
-        ]
-    return "\n".join(lines)
-
-
-def _acquire_lock(workdir_parent: Path) -> Path:
-    """Refuse to run when another instance is live.
-
-    Two concurrent runs share a workdir, and each one's reset does
-    `rm -rf <data_dir>`. The loser's seeded database is deleted mid-session,
-    recall silently returns nothing, and the run reports a confident null for
-    a treatment that was wiped out from under it. That happened twice here
-    before the cause was found.
-    """
-    lock = workdir_parent / "cm-membench.lock"
-    if lock.exists():
-        try:
-            pid = int(lock.read_text().strip())
-            os.kill(pid, 0)          # signal 0 just tests existence
-        except (ValueError, ProcessLookupError):
-            lock.unlink(missing_ok=True)   # stale
-        except PermissionError:
-            pass                     # exists, owned by another user
-        else:
-            raise SystemExit(
-                f"another benchmark is running (pid {pid}). "
-                f"Wait for it, or remove {lock} if it is stale."
-            )
-    lock.write_text(str(os.getpid()))
-    return lock
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -160,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     matrix = run_matrix(tasks, replicates=args.replicates,
                         arms=["off", "on"], on_result=progress)
 
-    print("\n" + _delivery_report(workdir, matrix))
+    print("\n" + delivery_report(matrix, MEMORY_MARKER, "recalled memory"))
     print("\n" + format_report(matrix, baseline="off", treatment="on"))
 
     out = args.out or (workdir / "results.json")

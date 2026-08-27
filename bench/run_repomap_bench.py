@@ -11,8 +11,8 @@ import shutil
 from pathlib import Path
 
 from bench.corpus_repomap import build_fixture, build_tasks, index_fixture
-from bench.report import format_report
-from bench.run_memory_bench import _acquire_lock, _delivery_report, _hook_settings
+from bench.report import REPOMAP_MARKER, delivery_report, format_report
+from bench.run_memory_bench import _acquire_lock, _hook_settings
 from bench.runner import run_matrix
 
 BASELINE_ARM = "norepomap"
@@ -65,7 +65,9 @@ def main(argv: list[str] | None = None) -> int:
     matrix = run_matrix(tasks, replicates=args.replicates,
                         arms=[BASELINE_ARM, TREATMENT_ARM], on_result=progress)
 
-    print("\n" + _delivery_report(workdir, matrix))
+    print("\n" + delivery_report(matrix, REPOMAP_MARKER, "RepoMap",
+                                 treatment_arm=TREATMENT_ARM,
+                                 baseline_arm=BASELINE_ARM))
     print("\n" + format_report(matrix, baseline=BASELINE_ARM, treatment=TREATMENT_ARM))
 
     out = args.out or (workdir / "results.json")
