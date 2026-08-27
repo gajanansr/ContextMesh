@@ -153,6 +153,23 @@ def test_matrix_counterbalances_arm_order(monkeypatch, task):
     assert order == [(0, "on"), (0, "off"), (1, "off"), (1, "on")]
 
 
+def test_rotation_generalises_beyond_two_arms(monkeypatch, task):
+    """A cross-tool comparison has more than two arms; ABBA does not cover it."""
+    order = []
+
+    def fake_once(t, arm, replicate, model=None):
+        order.append(arm)
+        return runner.RunResult(task_id=t.task_id, arm=arm, replicate=replicate)
+
+    monkeypatch.setattr(runner, "run_once", fake_once)
+    run_matrix([task], replicates=3, arms=["a", "b", "c"], warmup=False)
+
+    # Each replicate rotates the starting arm.
+    assert order == ["a", "b", "c", "b", "c", "a", "c", "a", "b"]
+    # Over a full cycle every arm leads exactly once, so none owns the cold slot.
+    assert sorted(order[0::3]) == ["a", "b", "c"]
+
+
 def test_matrix_runs_and_discards_a_warmup(monkeypatch, task):
     seen = []
 

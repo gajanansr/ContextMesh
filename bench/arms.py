@@ -113,44 +113,64 @@ CONTEXTMESH_ARMS: dict[str, Arm] = {
 # here so the harness is ready to run them; none are installed automatically,
 # and each is skipped with a reason when its executable is absent.
 
+# Headroom is driven through `headroom proxy` + ANTHROPIC_BASE_URL rather than
+# `headroom wrap claude`. `wrap` rewrites ~/.claude.json at user scope and
+# installs Serena; the proxy form changes nothing outside the benchmark's own
+# environment and is verified to work with OAuth (non-API-key) auth.
+#
+# The pairing matters more than either arm alone. `--no-optimize` runs the same
+# proxy in passthrough, so comparing optimize-vs-passthrough cancels the
+# proxy's own latency and token overhead and isolates the compression itself.
+# Comparing "through a proxy" against "no proxy at all" would confound the two.
+HEADROOM_PORT = 8787
+HEADROOM_PASSTHROUGH_PORT = 8788
+
 THIRD_PARTY_ARMS: dict[str, Arm] = {
     "headroom": Arm(
         name="headroom",
-        command_prefix=("headroom", "wrap"),
         requires=("headroom",),
-        env={"CONTEXTMESH_DISABLE": "1"},
-        # Headroom compresses inside a local proxy. Nothing about that is
+        env={
+            "CONTEXTMESH_DISABLE": "1",
+            "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{HEADROOM_PORT}",
+        },
+        # Compression happens inside the proxy. Nothing about that is
         # necessarily visible in the transcript, so delivery cannot be
         # confirmed the way ContextMesh's injection can.
         delivery_marker=None,
         notes=(
-            "Headroom wraps the agent and compresses through a proxy. "
-            "ContextMesh is disabled so the two cannot overlap. Delivery is "
-            "unverifiable from the transcript -- treat results as weaker "
-            "evidence than a verified arm."
+            "Headroom proxy with optimization enabled. ContextMesh disabled so "
+            "the two cannot overlap. Delivery is unverifiable from the "
+            "transcript -- weaker evidence than a verified arm. Pair with "
+            "headroom-passthrough, not with a no-proxy baseline."
         ),
     ),
-    "headroom-memory": Arm(
-        name="headroom-memory",
-        command_prefix=("headroom", "wrap"),
+    "headroom-passthrough": Arm(
+        name="headroom-passthrough",
         requires=("headroom",),
-        env={"CONTEXTMESH_DISABLE": "1"},
+        env={
+            "CONTEXTMESH_DISABLE": "1",
+            "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{HEADROOM_PASSTHROUGH_PORT}",
+        },
         delivery_marker=None,
+        expects_marker=False,
         notes=(
-            "Headroom with its persistent memory enabled -- the closest "
-            "comparison to ContextMesh's measured feature. Needs "
-            "--memory appended by the driver."
+            "Same proxy, --no-optimize. The control for the headroom arm: "
+            "identical network path, no compression, so the difference is "
+            "the optimization rather than the proxy."
         ),
     ),
     "rtk": Arm(
         name="rtk",
-        command_prefix=("rtk",),
         requires=("rtk",),
         env={"CONTEXTMESH_DISABLE": "1"},
+        # RTK installs a PreToolUse hook that rewrites Bash calls, the same
+        # mechanism ContextMesh uses. The driver points --settings at a
+        # generated file so nothing is installed globally.
         delivery_marker=None,
         notes=(
             "RTK compresses command output via per-command parsers. Comparable "
-            "to ContextMesh's output capture, not to memory."
+            "to ContextMesh's output capture, not to its memory. Needs a "
+            "settings file wiring its hook; see the cross-tool driver."
         ),
     ),
 }

@@ -43,6 +43,14 @@ ARMS: dict[str, dict[str, str]] = {
     "norepomap": {"CONTEXTMESH_NO_MEMORY": "1", "CONTEXTMESH_NO_REPOMAP": "1"},
 }
 
+# Full arm specifications, including third-party tools (see bench/arms.py).
+# ARMS above stays the env-only view so existing callers keep working; this
+# adds wrapper argv, per-arm settings files, and setup/teardown.
+from bench.arms import ALL_ARMS as ARM_SPECS  # noqa: E402
+
+for _name, _spec in ARM_SPECS.items():
+    ARMS.setdefault(_name, dict(_spec.env))
+
 
 @dataclass(frozen=True)
 class Task:
@@ -197,6 +205,8 @@ def run_once(task: Task, arm: str, replicate: int, model: str | None = None) -> 
             result.error = f"setup failed ({code}): {out[-300:]}"
             return result
 
+    arm_spec = ARM_SPECS.get(arm)
+
     env = dict(os.environ)
     env.update(task.env)
     env.update(ARMS[arm])
@@ -208,10 +218,17 @@ def run_once(task: Task, arm: str, replicate: int, model: str | None = None) -> 
         "--output-format", "json",
         "--permission-mode", "bypassPermissions",
     ]
-    if task.settings:
-        cmd += ["--settings", str(task.settings)]
+    # An arm's own settings file wins over the task's: a third-party tool that
+    # installs its own hooks must not also get ContextMesh's.
+    settings = (arm_spec.settings if arm_spec and arm_spec.settings else task.settings)
+    if settings:
+        cmd += ["--settings", str(settings)]
     if model:
         cmd += ["--model", model]
+
+    # Wrapper argv, e.g. ("headroom", "wrap") -> `headroom wrap claude -p ...`
+    if arm_spec and arm_spec.command_prefix:
+        cmd = list(arm_spec.command_prefix) + cmd
 
     started = time.monotonic()
     try:
@@ -314,11 +331,14 @@ def run_matrix(
     of a task several times more expensive than the second, so:
 
     - one warm-up run per task is executed and discarded, and
-    - arm order is reversed on odd replicates (ABBA), so neither arm
-      systematically occupies the cold slot.
+    - arm order is rotated by replicate index, so no arm systematically
+      occupies the cold first slot.
 
-    With an even number of replicates each arm takes the first slot equally
-    often; odd counts leave a residual bias toward the arm listed first.
+    Rotation generalises the two-arm ABBA design to any number of arms: with
+    `replicates` a multiple of the arm count, every arm takes every position
+    equally often. Fewer replicates than arms leaves a residual bias toward
+    whichever arms lead, which is why a cross-tool comparison wants at least
+    as many replicates as it has arms.
     """
     arms = list(arms or ARMS)
     matrix = Matrix()
@@ -328,7 +348,8 @@ def run_matrix(
             run_once(task, arms[0], replicate=-1, model=model)
 
         for replicate in range(replicates):
-            ordered = arms if replicate % 2 == 0 else list(reversed(arms))
+            shift = replicate % len(arms)
+            ordered = arms[shift:] + arms[:shift]
             for arm in ordered:
                 result = run_once(task, arm, replicate, model=model)
                 matrix.add(result)
