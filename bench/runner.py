@@ -39,7 +39,7 @@ from bench.transcript import SessionCost, parse_session
 ARMS: dict[str, dict[str, str]] = {
     "on": {},
     "off": {"CONTEXTMESH_DISABLE": "1"},
-    "repomap": {"CONTEXTMESH_NO_MEMORY": "1"},
+    "repomap": {"CONTEXTMESH_NO_MEMORY": "1", "CONTEXTMESH_REPOMAP": "1"},
     "norepomap": {"CONTEXTMESH_NO_MEMORY": "1", "CONTEXTMESH_NO_REPOMAP": "1"},
 }
 

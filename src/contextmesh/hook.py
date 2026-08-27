@@ -27,6 +27,24 @@ DISABLE_ENV_VAR = "CONTEXTMESH_DISABLE"
 # time -- measuring them together cannot say which one paid.
 NO_REPOMAP_ENV_VAR = "CONTEXTMESH_NO_REPOMAP"
 NO_MEMORY_ENV_VAR = "CONTEXTMESH_NO_MEMORY"
+REPOMAP_ENV_VAR = "CONTEXTMESH_REPOMAP"
+
+# The RepoMap is off by default because it was measured and it lost.
+#
+# bench/results/repomap-2026-08-27.json, 3 tasks x 3 replicates, delivery
+# verified 9/9 treatment and 0/9 control: cost +45.6% (CI [+0.044, +0.129]),
+# billed input +57.6%, turns -0.33 with a CI spanning zero. It costs
+# significantly more and does not significantly reduce turns, even on tasks
+# written to reward knowing where code lives.
+#
+# The cause is almost certainly ranking. The map is ordered alphabetically by
+# file path and truncated at 10k chars, so it spends its whole budget on
+# whatever sorts first rather than on what the task needs. Aider ranks symbols
+# by PageRank over the reference graph against the current context, which is
+# the piece this does not have. Once that lands, re-run the benchmark and flip
+# this default back if it earns it.
+#
+# Set CONTEXTMESH_REPOMAP=1 to opt in.
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -40,7 +58,9 @@ def is_disabled() -> bool:
 
 
 def repomap_enabled() -> bool:
-    return not _flag(NO_REPOMAP_ENV_VAR)
+    if _flag(NO_REPOMAP_ENV_VAR):
+        return False
+    return _flag(REPOMAP_ENV_VAR)
 
 
 def memory_enabled() -> bool:

@@ -13,7 +13,7 @@ Works with Claude Pro/Max OAuth, API keys, Bedrock, and Vertex.
 | | |
 |---|---|
 | **Session memory** | Harvests each finished session into a knowledge graph — goals, files changed, errors hit, decisions, dead ends — and recalls the relevant parts into your next session. |
-| **AST RepoMap** | Parses your codebase with Tree-sitter and injects a structural map before your first turn, so Claude knows the architecture without reading files to find it. |
+| **AST RepoMap** | Parses your codebase with Tree-sitter into a structural map. **Off by default** — it was measured and it lost. See below. |
 | **Output capture** | Large command output is written to disk and summarised in context, with a pointer to read the rest. Nothing is discarded. |
 
 ---
@@ -45,9 +45,27 @@ delta on top of caching, not instead of it. Treat any tool claiming "90% fewer
 tokens" against an uncached baseline with suspicion — including earlier
 versions of this README, which did exactly that.
 
-The RepoMap has **not** been measured yet. It injects roughly 2,500 tokens per
-session and its benefit is assumed, not demonstrated. That is the next thing
-the harness will test.
+### The RepoMap was measured, and it lost
+
+Same method, 3 tasks × 3 replicates, delivery verified 9/9 treatment and 0/9
+control, all 18 runs passing their check:
+
+| | turns | cost |
+|---|---|---|
+| Overall | −0.33 (n.s.) | **+45.6%** [+0.044, +0.129] |
+| Locate tasks only | −0.50 (n.s.) | **+40.9%** [+0.041, +0.161] |
+| Control | 0.00 | +$0.058 (n.s.) |
+
+It costs significantly more and does not significantly reduce turns, even on
+tasks written specifically to reward knowing where code lives. **It is
+therefore off by default**; set `CONTEXTMESH_REPOMAP=1` to opt in.
+
+This is not evidence that repomaps do not work — Aider's does. It is evidence
+that *this* one does not, and the reason is probably ranking: the map is
+ordered alphabetically by file path and truncated at 10k characters, so it
+spends its budget on whatever sorts first rather than on what the task needs.
+Aider ranks symbols by PageRank over the reference graph against the current
+context. Until that lands here, the map is a 2,500-token tax.
 
 ---
 
@@ -131,6 +149,8 @@ Environment variables:
 | `CONTEXTMESH_DISABLE=1` | Makes every hook inert without uninstalling |
 | `CONTEXTMESH_TIMEOUT` | Command timeout in seconds (default 1800; `0` disables) |
 | `CONTEXTMESH_DATA_DIR` | Override the database location |
+| `CONTEXTMESH_REPOMAP=1` | Opt into RepoMap injection (off by default) |
+| `CONTEXTMESH_NO_MEMORY=1` | Disable memory recall |
 
 ---
 
@@ -138,6 +158,7 @@ Environment variables:
 
 ```bash
 python -m bench.run_memory_bench --replicates 3
+python -m bench.run_repomap_bench --replicates 3
 ```
 
 The harness verifies its own treatment was delivered and prints `INVALID` if

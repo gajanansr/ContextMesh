@@ -38,9 +38,13 @@ Prompt caching alone already saves 85.6%; every claim is a delta on top of that.
       turns at equal cost — not "90% fewer tokens".
 
 ## 4. Earn the comparison
-- [ ] Measure the RepoMap itself. It now injects ~10k chars (~2.5k tokens) per
-      session at the same point as memory, and has never been measured. The
-      harness can A/B it the same way it did memory.
+- [x] Measure the RepoMap. RESULT: it loses. Cost +45.6% significant, turns
+      -0.33 not significant, even on locate tasks. Now off by default
+      (CONTEXTMESH_REPOMAP=1 opts in).
+- [ ] Rank the RepoMap by PageRank over the reference graph instead of sorting
+      alphabetically and truncating at 10k chars. This is almost certainly why
+      it loses — it spends its budget on whatever sorts first. Re-measure after,
+      and flip the default back only if it earns it.
 - [ ] Broaden the corpus beyond one synthetic fixture and my own authored tasks
 - [ ] Re-measure after the gating change; confirm cost-neutral becomes
       cost-positive
