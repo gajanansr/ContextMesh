@@ -78,3 +78,62 @@ def test_preflight_tolerates_hook_not_installed(monkeypatch):
 
     monkeypatch.setattr(runner.subprocess, "run", boom)
     assert runner.preflight_arms() == []
+
+
+# ── cross-tool arms ─────────────────────────────────────────────────────────
+
+def test_contextmesh_arms_are_all_verifiable():
+    """Our own arms must always prove delivery -- that check has rescued 3 runs."""
+    from bench.arms import CONTEXTMESH_ARMS
+
+    assert all(arm.verifiable for arm in CONTEXTMESH_ARMS.values())
+
+
+def test_baseline_arms_expect_the_marker_absent():
+    """A control that expects the treatment present cannot catch leakage."""
+    from bench.arms import CONTEXTMESH_ARMS
+
+    assert CONTEXTMESH_ARMS["off"].expects_marker is False
+    assert CONTEXTMESH_ARMS["norepomap"].expects_marker is False
+
+
+def test_repomap_arms_isolate_the_map_from_memory():
+    from bench.arms import CONTEXTMESH_ARMS
+
+    for name in ("repomap", "norepomap"):
+        assert CONTEXTMESH_ARMS[name].env["CONTEXTMESH_NO_MEMORY"] == "1"
+
+
+def test_third_party_arms_disable_contextmesh():
+    """Two context layers at once measures neither."""
+    from bench.arms import THIRD_PARTY_ARMS
+
+    assert all(a.env.get("CONTEXTMESH_DISABLE") == "1" for a in THIRD_PARTY_ARMS.values())
+
+
+def test_third_party_arms_declare_themselves_unverifiable():
+    """Honesty requirement: we cannot confirm a proxy-based tool acted.
+
+    Claiming otherwise would be the same error this harness exists to catch,
+    aimed at a competitor.
+    """
+    from bench.arms import THIRD_PARTY_ARMS
+
+    assert all(not a.verifiable for a in THIRD_PARTY_ARMS.values())
+
+
+def test_missing_tools_are_skipped_with_a_reason_not_silently():
+    from bench.arms import check_availability
+
+    runnable, skipped = check_availability(["off", "headroom", "rtk"])
+
+    assert "off" in runnable
+    assert any("headroom" in s and "not installed" in s for s in skipped)
+    assert any("rtk" in s for s in skipped)
+
+
+def test_unknown_arm_is_rejected():
+    from bench.arms import resolve
+
+    with pytest.raises(ValueError, match="unknown arm"):
+        resolve("nonexistent")
