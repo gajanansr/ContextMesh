@@ -117,10 +117,17 @@ def _get_claude_settings_path() -> Path:
     return Path.home() / ".claude" / "settings.json"
 
 
+# Hook Engine entry point is one binary; Claude Code dispatches by event.
+HOOK_EVENTS = ("PreToolUse", "UserPromptSubmit", "SessionEnd")
+
+
 def inject_claude_hooks() -> None:
-    """
-    Write PreToolUse hook into ~/.claude/settings.json
-    so the ContextMesh Hook Engine intercepts terminal commands.
+    """Register the ContextMesh Hook Engine for every event it handles.
+
+    PreToolUse compresses tool output, UserPromptSubmit recalls prior-session
+    memory, SessionEnd harvests the finished transcript. Registration is
+    idempotent -- existing entries are left alone and missing ones added, so
+    upgrading from a PreToolUse-only install just works.
     """
     settings_path = _get_claude_settings_path()
     settings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -133,26 +140,29 @@ def inject_claude_hooks() -> None:
             data = {}
 
     hooks = data.setdefault("hooks", {})
-    pre_tool = hooks.setdefault("PreToolUse", [])
+    added = []
 
-    # Check if contextmesh-hook is already installed
-    has_hook = False
-    for entry in pre_tool:
-        for h in entry.get("hooks", []):
-            if h.get("command") == "contextmesh-hook":
-                has_hook = True
-                break
-
-    if not has_hook:
-        pre_tool.append({
+    for event in HOOK_EVENTS:
+        entries = hooks.setdefault(event, [])
+        already = any(
+            h.get("command") == "contextmesh-hook"
+            for entry in entries
+            for h in entry.get("hooks", [])
+        )
+        if already:
+            continue
+        entries.append({
             "matcher": "*",
-            "hooks": [{
-                "type": "command",
-                "command": "contextmesh-hook"
-            }]
+            "hooks": [{"type": "command", "command": "contextmesh-hook"}],
         })
+        added.append(event)
+
+    if added:
         settings_path.write_text(json.dumps(data, indent=2))
-        console.print("  [green]✓[/green] Claude Code hooks installed in [bold]~/.claude/settings.json[/bold]")
+        console.print(
+            f"  [green]OK[/green] Hook Engine registered for {', '.join(added)} "
+            f"in [bold]~/.claude/settings.json[/bold]"
+        )
     else:
         console.print("  [dim]Claude Code hooks already installed[/dim]")
 

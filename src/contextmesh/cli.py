@@ -121,33 +121,34 @@ def stats(session: str | None) -> None:
             console.print("[yellow]No token tracking data found yet.[/yellow]")
             return
 
-        repo_nodes = con.execute("SELECT repo_node_type, COUNT(*) as c FROM repo_nodes GROUP BY repo_node_type").fetchall()
-        files_count = sum(r["c"] for r in repo_nodes if r["repo_node_type"] == "repo_file")
-        symbols_count = sum(r["c"] for r in repo_nodes if r["repo_node_type"] != "repo_file")
-        
-        exploration_cost_per_session = (files_count * 10) + (symbols_count * 5)
-        if exploration_cost_per_session == 0:
-            exploration_cost_per_session = 5000 
-            
-        repomap_saved_est = sessions * exploration_cost_per_session
-        total_saved = saved + repomap_saved_est
-        cost_saved = (total_saved / 1_000_000) * 3.0
-        
-        title = f"ContextMesh Token Savings (Session: {session[:8]})" if session else "ContextMesh Token Savings (Global)"
+        # Only measured quantities are reported. The previous version added an
+        # invented (files * 10 + symbols * 5) "averted exploration" term that
+        # supplied ~99.5% of its own headline; it was unfalsifiable and it made
+        # regressions invisible, because the fake term dwarfed the real one.
+        # Use `bench/` for a controlled before/after comparison.
+        memory_nodes = con.execute("SELECT COUNT(*) c FROM nodes").fetchone()["c"]
+        memory_sessions = con.execute("SELECT COUNT(*) c FROM sessions").fetchone()["c"]
+
+        title = f"ContextMesh (Session: {session[:8]})" if session else "ContextMesh (Global)"
         table = Table(title=title)
         table.add_column("Metric", style="cyan")
         table.add_column("Value", style="green", justify="right")
 
-        table.add_row("Sessions Tracked", f"{sessions:,}")
-        table.add_row("Total Turns Intercepted", f"{turns:,}")
-        table.add_row("Original Tokens (Estimated)", f"{orig:,}")
-        table.add_row("Tokens Sent (Compressed)", f"{routed:,}")
-        table.add_row("RTK Truncation Saved", f"{saved:,}")
-        table.add_row("RepoMap Averted Expl.", f"{repomap_saved_est:,}")
-        table.add_row("Total Tokens Saved", f"[bold]{total_saved:,}[/bold]")
-        table.add_row("Total Cost Saved (USD)", f"[bold]${cost_saved:.4f}[/bold]")
+        table.add_row("Sessions tracked", f"{sessions:,}")
+        table.add_row("Tool calls intercepted", f"{turns:,}")
+        table.add_row("Output chars before compression", f"{orig * 4:,}")
+        table.add_row("Output chars after compression", f"{routed * 4:,}")
+        table.add_row("Tokens saved on tool output", f"[bold]{saved:,}[/bold]")
+        table.add_row("", "")
+        table.add_row("Sessions in memory", f"{memory_sessions:,}")
+        table.add_row("Knowledge nodes stored", f"{memory_nodes:,}")
 
         console.print(Panel(table, border_style="blue"))
+        console.print(
+            "[dim]Tool-output savings are measured. They exclude what the RepoMap\n"
+            "and memory injection cost, so this is not a net figure — run the\n"
+            "harness in bench/ for a controlled net comparison.[/dim]"
+        )
     except Exception as e:
         console.print(f"[red]Error reading stats:[/red] {e}")
     finally:
@@ -226,21 +227,28 @@ def run(payload_b64: str, session: str) -> None:
         return
 
     # 2. Execute locally
-    proc = subprocess.run(command, shell=True, capture_output=True, text=True)
-    raw_output = proc.stdout
-    if proc.stderr:
-        raw_output += f"\n[STDERR]\n{proc.stderr}"
-    
+    import sys
+    from contextmesh.utils.executor import execute
+
+    execution = execute(command)
+    raw_output = execution.output
+
     if not raw_output.strip():
         raw_output = "(Command executed successfully with no output)"
 
-    # 3. Compress (RTK style)
+    # 3. Compress (RTK style) to out-of-band digest
     original_chars = len(raw_output)
     if original_chars > 12_000:
+        import hashlib, os
+        digest = hashlib.md5(command.encode()).hexdigest()[:8]
+        out_dir = get_config().data_dir / "outputs"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_file = out_dir / f"{digest}.txt"
+        out_file.write_text(raw_output)
+        
         compressed = (
             raw_output[:3000] 
-            + f"\n\n... [ContextMesh RTK Compressor: {original_chars - 6000} chars removed to save tokens] ...\n\n" 
-            + raw_output[-3000:]
+            + f"\n\n... [ContextMesh RTK Compressor: Full output saved to {out_file} to save tokens. Use `cat` or `head`/`tail` on that file to read the rest.] ...\n" 
         )
     else:
         compressed = raw_output
@@ -253,15 +261,9 @@ def run(payload_b64: str, session: str) -> None:
     try:
         db_path = str(get_config().data_dir / "contextmesh.db")
         
-        # Try to inject Repomap first (even if DB locks, we can just read the file)
-        try:
-            # We'll just always inject it for the first tool call of the session
-            # Claude's session id changes each run. 
-            repomap = _build_repomap_from_db(db_path)
-            if repomap:
-                final_output = repomap + "\n\n=== COMMAND OUTPUT ===\n" + final_output
-        except Exception:
-            pass
+        # The RepoMap is injected at UserPromptSubmit now, not here. On a
+        # tool result it arrived only if the session happened to start with
+        # Bash, and always after the agent had already planned.
 
         con = sqlite3.connect(db_path, timeout=5)
         # Record stat measurement
@@ -285,7 +287,55 @@ def run(payload_b64: str, session: str) -> None:
 
     # 5. Output to Claude
     print(final_output)
+    sys.exit(execution.returncode)
 
+
+
+@main.command()
+@click.argument("transcript", type=click.Path(exists=True))
+@click.option("--session", required=True, help="Session ID the transcript belongs to")
+@click.option("--project", default=".", help="Project root the session ran in")
+def harvest(transcript: str, session: str, project: str) -> None:
+    """Extract knowledge nodes from a session transcript into the graph.
+
+    Runs automatically on SessionEnd; this is for backfilling old sessions.
+    """
+    from collections import Counter
+
+    from contextmesh.config import get_config
+    from contextmesh.memory.extractor import extract_nodes
+    from contextmesh.memory.store import save_nodes
+
+    project_path = str(Path(project).resolve())
+    nodes = extract_nodes(transcript, session, project_path)
+    if not nodes:
+        console.print("[yellow]Nothing extractable in that transcript.[/yellow]")
+        return
+
+    saved = save_nodes(str(get_config().data_dir / "contextmesh.db"), session, project_path, nodes)
+    console.print(f"[green]Harvested[/green] {saved} nodes from session {session[:8]}")
+    for node_type, count in Counter(n.node_type.value for n in nodes).most_common():
+        console.print(f"  {count:4d}  {node_type}")
+
+
+@main.command()
+@click.option("--project", default=".", help="Project root to recall for")
+@click.option("--prompt", default="", help="Prompt to rank memory against")
+def recall(project: str, prompt: str) -> None:
+    """Print the memory block that would be injected into a new session."""
+    from contextmesh.config import get_config
+    from contextmesh.memory.recall import build_recall_context
+
+    context = build_recall_context(
+        db_path=str(get_config().data_dir / "contextmesh.db"),
+        project_path=str(Path(project).resolve()),
+        prompt=prompt,
+    )
+    if not context:
+        console.print("[dim]No memory recorded for this project yet.[/dim]")
+        return
+    console.print(context)
+    console.print(f"\n[dim]{len(context)} chars (~{len(context)//4} tokens)[/dim]")
 
 
 @main.command()
@@ -351,16 +401,10 @@ def status() -> None:
             row = con.execute("SELECT SUM(rtk_tokens_saved) as saved FROM proxy_measurements").fetchone()
             saved = row["saved"] or 0
             
-            repo_nodes = con.execute("SELECT repo_node_type, COUNT(*) as c FROM repo_nodes GROUP BY repo_node_type").fetchall()
-            files_count = sum(r["c"] for r in repo_nodes if r["repo_node_type"] == "repo_file")
-            symbols_count = sum(r["c"] for r in repo_nodes if r["repo_node_type"] != "repo_file")
-            exp_cost = (files_count * 10) + (symbols_count * 5)
-            if exp_cost == 0: exp_cost = 5000
-            
             sessions = con.execute("SELECT COUNT(DISTINCT session_id) as c FROM proxy_measurements").fetchone()["c"] or 0
-            repomap_saved = sessions * exp_cost
-            tot = saved + repomap_saved
-            console.print(f"  [cyan]Token Savings: ~{tot:,} tokens ({saved:,} RTK + {repomap_saved:,} RepoMap)[/cyan]")
+            nodes = con.execute("SELECT COUNT(*) as c FROM nodes").fetchone()["c"] or 0
+            console.print(f"  [cyan]Tool output: {saved:,} tokens saved across {sessions:,} sessions[/cyan]")
+            console.print(f"  [cyan]Memory: {nodes:,} knowledge nodes recalled across sessions[/cyan]")
         except Exception:
             pass
         finally:

@@ -1,199 +1,161 @@
-# ContextMesh — Intelligent Context Layer for Claude Code
+# ContextMesh
 
-> One coding session. Infinite memory. 90% fewer tokens.
+**Session memory and codebase context for Claude Code.** Your next session
+starts knowing what the last one learned — including what didn't work.
 
-ContextMesh is a **pure transparent proxy + memory engine** that sits between Claude Code and the Anthropic API. It automatically compresses token waste, maintains a persistent knowledge graph of your work, and injects Aider-style codebase repomaps — all without changing how you use Claude.
-
-**No MCP. No wrappers. Just run `contextmesh init` once globally. Then use `claude` normally forever.**
-
----
-
-## How it works (Pure Proxy Architecture)
-
-Everything happens automatically in the proxy. Claude doesn't need to learn any new tools or call any MCP endpoints. 
-
-```
-Your Terminal (just run `claude`)
-    │
-    ▼
-┌──────────────────────────────────────────┐
-│         ContextMesh Smart Proxy          │  ← Intercepts every request globally
-│  ┌─────────────────────────────────┐     │
-│  │  Aider-Style RepoMap Injector   │     │  ← Injects AST map into system prompt
-│  │  Session Resumption Injector    │     │  ← Injects last session memory
-│  │  RTK Output Compressor          │     │  ← Crushes terminal noise
-│  │  Anti-Context Auto-Flusher      │     │  ← Removes old resolved turns
-│  └─────────────────────────────────┘     │
-│             ↓ Stats Writer ↓             │
-└─────────────┼──────────────┼─────────────┘
-              │              │
-      To Anthropic API     To Local SQLite (for dashboard & stats)
-```
+Runs entirely on local hooks. No proxy, no MCP server, no API key handling.
+Works with Claude Pro/Max OAuth, API keys, Bedrock, and Vertex.
 
 ---
 
-## Features
+## What it actually does
 
-| Feature | What it does | Savings |
-|---|---|---|
-| **RTK Output Compressor** | Intercepts massive `grep`, `npm test`, `cat` outputs and crushes the middle noise | Up to 90% on tool outputs |
-| **AST Repo-Map Injector** | Parses your entire codebase with Tree-sitter and silently injects a dense structural map into Claude's system prompt on Turn 1 | 95% on code reads |
-| **Anti-Context Auto-Flusher** | Silently drops old resolved tool calls from history when context bloats past 150k chars | 30–60% on long sessions |
-| **Session Resumption** | Automatically injects your last session's summary on startup so Claude remembers decisions | Saves re-explanation tokens |
-| **God-Mode Dashboard** | Beautiful live web UI showing exact tokens saved, cost averted, and compression chart | — |
-ContextMesh is the intelligent memory and context layer for **Claude Code**. 
-
-Instead of letting Claude waste tens of thousands of tokens blindly reading files and repeating mistakes, ContextMesh seamlessly intercepts Claude's local tools to compress output and inject a dense architectural map of your project.
-
-### Why use ContextMesh?
-1. **The AST Repo-Map Injector:** Forces Claude to understand your entire project architecture on Turn 1 (like Aider).
-2. **RTK Token Compression:** Intercepts noisy shell commands (`npm install`, `grep`) and compresses them by up to 90% before Claude sees them.
-3. **100% Claude Pro Compatible:** Powered entirely by local Hooks. Zero network proxies. Works flawlessly with API keys, Claude Pro, AWS Bedrock, and Google Vertex.
+| | |
+|---|---|
+| **Session memory** | Harvests each finished session into a knowledge graph — goals, files changed, errors hit, decisions, dead ends — and recalls the relevant parts into your next session. |
+| **AST RepoMap** | Parses your codebase with Tree-sitter and injects a structural map before your first turn, so Claude knows the architecture without reading files to find it. |
+| **Output capture** | Large command output is written to disk and summarised in context, with a pointer to read the rest. Nothing is discarded. |
 
 ---
 
-## ⚡ Quickstart
+## Measured results
 
-### 1. Global Setup (Run Once)
-Run this once for your entire machine:
+Claims here come from `bench/`, which A/Bs real Claude Code sessions with the
+hooks live versus inert and bills every token at its true rate — cache reads at
+0.1×, cache writes at 1.25× or 2.0× depending on TTL. Raw data is in
+`bench/results/`.
+
+Session memory, 3 tasks × 3 replicates, delivery-verified, all runs passing
+their task check:
+
+| | turns | 95% CI | cost |
+|---|---|---|---|
+| Tasks memory applies to | **−17.9%** | [−1.62, −0.04] | no significant difference |
+| Task memory can't help (control) | 0.00 | [0.00, 0.00] | +$0.027 (n.s.) |
+
+**What that means:** memory gets Claude to the answer in roughly one fewer
+turn, at the same price. It is not a cost saving — the tokens it injects
+roughly cancel the turns it saves. When nothing relevant is stored it is a
+small pure cost, which is why gating recall on relevance is the next
+priority.
+
+**What it does not mean:** prompt caching alone already cuts cost ~85% on a
+typical session, measured across 241 local sessions. Every number above is a
+delta on top of caching, not instead of it. Treat any tool claiming "90% fewer
+tokens" against an uncached baseline with suspicion — including earlier
+versions of this README, which did exactly that.
+
+The RepoMap has **not** been measured yet. It injects roughly 2,500 tokens per
+session and its benefit is assumed, not demonstrated. That is the next thing
+the harness will test.
+
+---
+
+## Install
+
 ```bash
 pipx install claude-contextmesh
-contextmesh init
+contextmesh init          # registers hooks in ~/.claude/settings.json
 ```
-This installs the **ContextMesh Hook Engine** directly into Claude Code's global settings. From now on, ContextMesh silently intercepts and compresses terminal commands.
 
-### 2. Using it in a Project
-To enable the massive token-saving **AST Repo-Map**, you need ContextMesh to index your codebase. You have two options:
+Then index a project once so the RepoMap and memory have something to work with:
 
-**Option A: The Manual Way (One-time)**
-Run this once when you enter a new project:
 ```bash
+cd your-project
 contextmesh index .
 ```
-This builds the map. (You will need to run it again later if you make major structural changes to your files).
 
-**Option B: The Automatic Way (File Watcher)**
-Run this in the background while you work:
-```bash
-contextmesh start &
-```
-This starts the ContextMesh Daemon for the current repo. It will automatically watch your files for changes and keep the RepoMap perfectly up-to-date in real time. It also hosts a beautiful token-savings dashboard at `http://localhost:8765/dashboard`.
+Use `claude` normally. Memory accumulates as you work.
 
-Now, just type `claude` and enjoy the token savings!
-
----
-
-## 📊 Checking Stats
-
-### Core
-```bash
-contextmesh init          # One-time global setup (run once per machine)
-contextmesh status        # Check if the proxy is running and view live savings
-contextmesh stop          # Stop the daemon
-contextmesh uninstall     # Cleanly remove all ContextMesh integrations
-```
-
-### Stats & Monitoring
-```bash
-contextmesh stats                           # Global token savings report
-contextmesh dashboard                       # Open live web dashboard in browser
-```
-
-### Manual Controls (Optional)
-```bash
-contextmesh proxy &       # Start the proxy manually (if you stopped the service)
-contextmesh index .       # Force a manual re-index of the current repo
-contextmesh start         # Start the full background daemon (file watcher)
-```
-
----
-
-## Token Savings Report
-
-The stats are tracked directly by the proxy sniffing the Anthropic API usage headers. It's 100% accurate.
-
-```bash
-$ contextmesh stats
-
-╭─ ContextMesh Token Savings Report ─╮
-│  Sessions tracked           │       12    │
-│  Turns tracked              │      284    │
-│                             │             │
-│  Original tokens (est.)     │  2,847,000  │
-│  Actual tokens sent         │    391,000  │
-│                             │             │
-│  RTK compressed             │  1,102,000  │
-│  Context flushed            │  1,354,000  │
-│  Total tokens saved         │  2,456,000  │
-│  Avg compression ratio      │       14%   │
-│  Estimated cost saved       │    $7.3680  │
-╰────────────────────────────────────────────╯
-```
-
----
-
-## Live Dashboard
-
-To watch your savings in real-time, start the daemon and open the dashboard:
+Optional — a file watcher that keeps the RepoMap current, plus a dashboard:
 
 ```bash
 contextmesh start &
 contextmesh dashboard
 ```
 
-You'll see a live, auto-refreshing dark-themed UI with:
-- **4 stat cards**: Raw tokens sent, Compressed tokens, Total saved, USD saved
-- **SVG bar chart**: Tokens saved per recent turns
-- **RTK Interception Log**: Every compression event with timestamps and savings %
+---
+
+## Commands
+
+```bash
+contextmesh init            # one-time global setup
+contextmesh index .         # index the current project
+contextmesh status          # check hooks are active
+contextmesh stats           # measured token savings on tool output
+contextmesh recall          # show what memory would be injected here
+contextmesh harvest <file>  # backfill memory from an old transcript
+contextmesh uninstall       # remove all integrations
+```
 
 ---
 
-## Architecture: Aider-Style RepoMap
+## How it works
 
-Without ContextMesh, Claude Code blindly guesses which files to read, burning tens of thousands of tokens per file. 
+Three hooks, one binary:
 
-ContextMesh uses Tree-sitter to parse your codebase (`.py`, `.ts`, `.js`, `.go`, `.rs`) and generates a dense Abstract Syntax Tree (AST) map. On the very first message of your session, the proxy intercepts the request and silently injects this map into Claude's system prompt.
-
-What Claude actually sees (invisibly to you):
-```text
-[ContextMesh RepoMap — injected automatically to save tokens on file reads]
-src/contextmesh/proxy.py
-  class TokenProxy  (L12)
-    def startup_event  (L36)
-    def proxy  (L140)
-src/contextmesh/utils/compressor.py
-    def compress_outbound_payload  (L11)
-...
-[Use file line numbers above to read only what you need]
 ```
-Claude now knows your exact project architecture instantly on turn 1, saving massive amounts of context.
+UserPromptSubmit  ── first prompt only ──► inject RepoMap + recalled memory
+PreToolUse        ── Bash commands ──────► capture output, summarise if large
+SessionEnd        ── session finished ───► harvest transcript into the graph
+```
+
+Memory is injected **once per session**, not per prompt. Injecting every turn
+appends a fresh block each time, and the compounding cost exceeds anything
+recall saves.
+
+Harvesting is deterministic and reads only the local transcript — no model
+call, so it costs nothing and cannot fail on an expired login. That limits it
+to what is observable: goals, file modifications, errors, commits, test runs.
+Decisions and hypotheses need a model pass and are deliberately not guessed at.
+
+Errors on files that were never subsequently fixed become `UNRESOLVED_ISSUE`
+nodes. That is the dead-end signal, and it is the thing a compression tool
+structurally cannot offer: your next session is told what already failed.
 
 ---
 
 ## Configuration
 
-`~/.contextmesh/config.toml` (global):
+`~/.contextmesh/config.toml`:
 
 ```toml
 [tracker]
-input_price_per_mtok = 3.0        # Claude cached input price (USD per million)
-
-[proxy]
-port = 8099
+input_price_per_mtok = 5.0
 ```
+
+Environment variables:
+
+| Variable | Effect |
+|---|---|
+| `CONTEXTMESH_DISABLE=1` | Makes every hook inert without uninstalling |
+| `CONTEXTMESH_TIMEOUT` | Command timeout in seconds (default 1800; `0` disables) |
+| `CONTEXTMESH_DATA_DIR` | Override the database location |
 
 ---
 
-## Supported Auth Modes
+## Benchmarking it yourself
 
-ContextMesh acts as a pure local HTTP proxy and supports all official Anthropic auth modes:
+```bash
+python -m bench.run_memory_bench --replicates 3
+```
 
-| Mode | Detection | Behavior |
-|---|---|---|
-| **API Key** | `ANTHROPIC_API_KEY` is set | Full proxy (compression + cost tracking) |
-| **Max/Pro** | OAuth login | Full proxy (compression only) |
-| **Bedrock** | `CLAUDE_CODE_USE_BEDROCK=1` | Handled natively by Claude |
-| **Vertex** | `CLAUDE_CODE_USE_VERTEX=1` | Handled natively by Claude |
+The harness verifies its own treatment was delivered and prints `INVALID` if
+not — it caught two runs that reported a clean "no significant difference" for
+a feature that had never actually run. It also reports "no significant
+difference" whenever the confidence interval spans zero, so a single run can
+never produce a headline.
+
+---
+
+## Limitations
+
+- Significant result rests on n=6 paired runs. Real, but barely clear of zero.
+- Benchmark tasks are authored in-house; the control task is the only guard
+  against that bias.
+- Relevance gating is implemented but disabled — no cheap signal separates
+  relevant from irrelevant memory, and embeddings cost 28s to import in a hook.
+- Extraction misses decisions and reasoning, by design.
 
 ---
 
