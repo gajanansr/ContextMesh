@@ -1,222 +1,171 @@
 # ContextMesh
 
-**Session memory and codebase context for Claude Code.** Your next session
-starts knowing what the last one learned — including what didn't work.
+**Archived.** A context layer for Claude Code — session memory and an AST repo map,
+delivered through local hooks. It works, it is measured, and the measurements say it
+is not worth running. This README explains what was built, what was measured, and why
+it stopped.
 
-Runs entirely on local hooks. No proxy, no MCP server, no API key handling.
-Works with Claude Pro/Max OAuth, API keys, Bedrock, and Vertex.
-
----
-
-## What it actually does
-
-| | |
-|---|---|
-| **Session memory** | Harvests each finished session into a knowledge graph — goals, files changed, errors hit, decisions, dead ends — and recalls the relevant parts into your next session. |
-| **AST RepoMap** | Parses your codebase with Tree-sitter into a structural map. **Off by default** — it was measured and it lost. See below. |
-| **Output capture** | Large command output is written to disk and summarised in context, with a pointer to read the rest. Nothing is discarded. |
+The code is functional and installable. The benchmark harness in `bench/` is the part
+most likely to be useful to someone else.
 
 ---
 
-## Measured results
+## Why it was archived
 
-Claims here come from `bench/`, which A/Bs real Claude Code sessions with the
-hooks live versus inert and bills every token at its true rate — cache reads at
-0.1×, cache writes at 1.25× or 2.0× depending on TTL. Raw data is in
-`bench/results/`.
+The tool injects context into a session — recalled memory, a codebase map. Injecting
+anything into a cached LLM session converts prompt-cache **reads** (billed at 0.1×)
+into cache **writes** (billed at 1.25× or 2.0×). The billed cost of an injected block
+is therefore a multiple of the block itself:
 
-Session memory, re-measured after broadening the corpus from two memory
-mechanisms to three (a DECISION, an UNRESOLVED_ISSUE, and a SOLUTION —
-distinct node types, not three variations on the same recall), delivery
-verified 0/12 baseline / 12/12 treatment, 23 of 24 runs passing:
-
-| | turns | 95% CI | cost |
+| Experiment | Payload injected | Extra tokens billed | Ratio |
 |---|---|---|---|
-| Two original mechanisms (n=6) | **−28.1%** | [−2.79, −0.21] | no significant difference |
-| Task memory can't help (control) | 0.00 | [0.00, 0.00] | +$0.021 (n.s.) |
+| `bench/results/position-2026-08-28.json` | 440 | +3,965 | 9.0× |
+| `bench/results/repomap-2026-08-28.json` | ~2,650 | +16,870 | 6.4× |
+| `bench/results/crosstool-2026-08-28.json` | ~470 | +10,916 | 23.2× |
 
-**What that means:** memory gets Claude to the answer in fewer turns, at the
-same price. It is not a cost saving — the tokens it injects roughly cancel the
-turns it saves. When nothing relevant is stored it is a small pure cost across
-two separate runs of the control task, which is why gating recall on
-relevance is the next priority.
+So an injected block must be worth roughly an order of magnitude more than its own
+size. Session memory clears that bar only when what it recalls is genuinely relevant.
+The repo map never cleared it.
 
-**A third mechanism, reported separately because it isn't as clean:** a task
-needing a recalled SOLUTION (retries must back off exponentially, not retry
-immediately) showed a much larger effect — but one `off`-arm replicate failed
-its verification outright and another spiked to 16 turns and $0.27, against a
-flat 4 turns and ~$0.05 every time with memory. Pooling all three mechanisms
-gives turns −45.6% (CI [−6.50, −0.004]) — technically significant, but that
-number is carried by one extreme outlier and I'm not publishing it as a
-headline. What I will stand behind: without memory, this task was
-*inconsistent* — sometimes it failed, sometimes it took much longer — and with
-memory it wasn't, once. That's a claim about reliability, not mean turns, and
-it's a mode of failure a compression-only tool has no mechanism to prevent.
+This is not a new discovery. [TokenPilot](https://arxiv.org/pdf/2606.17016) states it
+as its opening premise — "unconstrained sequence mutations alter layouts, introducing
+prefix mismatches and cache invalidation" — and reports prefix stabilisation moving
+cost from \$8.31 to \$4.35 and cache hit rate from 38.7% to 79.2%.
+[ProjectDiscovery](https://projectdiscovery.io/blog/how-we-cut-llm-cost-with-prompt-caching)
+documented the same effect, 7% → 84% hit rate. It was rediscovered here
+independently, which validates the harness and settles the product question.
 
-**What it does not mean:** prompt caching alone already cuts cost ~85% on a
-typical session, measured across 241 local sessions. Every number above is a
-delta on top of caching, not instead of it. Treat any tool claiming "90% fewer
-tokens" against an uncached baseline with suspicion — including earlier
-versions of this README, which did exactly that.
+---
 
-### The RepoMap was measured, and it lost
+## What was measured
 
-Same method, 3 tasks × 3 replicates, delivery verified 9/9 treatment and 0/9
-control, all 18 runs passing their check:
+Everything below came from `bench/`, which A/Bs real Claude Code sessions and bills
+every token at its true rate. Raw data is in `bench/results/`.
 
-| | turns | cost |
+### Session memory — works, conditionally
+
+| Condition | turns | cost |
 |---|---|---|
-| Overall | −0.33 (n.s.) | **+45.6%** [+0.044, +0.129] |
-| Locate tasks only | −0.50 (n.s.) | **+40.9%** [+0.041, +0.161] |
-| Control | 0.00 | +$0.058 (n.s.) |
+| Curated, relevant memory (n=6) | **−28.1%** [−2.79, −0.21] | no significant difference |
+| Memory as it naturally accumulates (n=12) | −0.58 (n.s.) | **+32.0%** [+0.010, +0.101] |
+| Task memory cannot help (control) | 0.00 [0.00, 0.00] | +$0.021 (n.s.) |
 
-It costs significantly more and does not significantly reduce turns, even on
-tasks written specifically to reward knowing where code lives. **It is
-therefore off by default**; set `CONTEXTMESH_REPOMAP=1` to opt in.
+Memory reduces turns when it recalls something relevant, at no extra cost. Left to
+accumulate — which is how memory actually behaves — it costs 32% more and buys
+nothing. Relevance gating would decide whether the feature is net-positive; it is
+implemented but disabled, because no cheap signal separated relevant from irrelevant
+memory (file overlap and word overlap both scored a related and an unrelated prompt
+identically at 0.300).
 
-The suspected cause was ranking: the map was ordered alphabetically by file
-path and truncated at 10k characters, spending its budget on whatever sorted
-first instead of what the task needed. That was fixed — symbols are now
-selected by PageRank over cross-file symbol references, the same idea Aider
-uses — and the benchmark was re-run (`bench/results/repomap-ranked-2026-08-28.json`,
-same corpus, delivery confirmed 9/9 / 0/9):
+One result worth keeping: on a task needing a recalled prior decision, the baseline
+failed 1 of 3 replicates and spiked to 16 turns on another, while every run with
+memory took 4 turns and passed. That is a claim about reliability, not mean cost.
 
-Then re-measured again after porting Aider's *query-personalized* PageRank,
-which biases ranking toward files and identifiers named in the prompt:
+### AST RepoMap — does not work
+
+Measured three times, with a different ordering each time:
 
 | Ordering | turns | cost |
 |---|---|---|
 | Alphabetical by file path | −0.33 (n.s.) | **+45.6%** |
 | Static global PageRank | −0.33 (n.s.) | **+74.6%** |
-| Query-personalized PageRank | −0.86 (n.s.) | **+35.9%** [+0.035, +0.121] |
+| Query-personalised PageRank (Aider's approach) | −0.86 (n.s.) | **+35.9%** |
 
-Personalization clearly helped — it roughly halved the cost regression versus
-the static version and produced the largest turn reduction of the three
-(locate-class 12.00 → 10.67 turns, locate-function 5.00 → 4.00). It still did
-not flip the verdict: cost is significantly up, turns are not significantly
-down. *(Caveat: 3 of 18 runs in that third pass died on an API rate limit,
-mostly on the control task, so it carries a weaker falsification check than
-the two clean runs before it.)*
+Ranking demonstrably improved *what* the map contained and never made it worth
+sending. A fixed ~2,650-token block has to be earned back every session, including on
+tasks needing no architectural context. Off by default; `CONTEXTMESH_REPOMAP=1` opts in.
 
-Ranking fixed *what* the map contains — demonstrably. What it can't fix is
-that the map costs a fixed ~2,500 tokens whether or not its contents are
-well-chosen, and that tax must be earned back on every session, including
-tasks needing no architectural context. Better sorting inside a fixed budget
-doesn't fix a tax that shouldn't always be paid. The remaining idea is making
-the cost *variable* — skip small codebases, size the budget to the task, gate
-on relevance — not further reordering. All three results stand; the map stays
-off by default.
+### Prompt caching dwarfs all of it
+
+Across 241 local sessions, prompt caching alone accounts for an **85.6%** cost
+reduction before any tool acts. Every number above is a delta on top of that. Treat
+any tool claiming "90% fewer tokens" against an uncached baseline with suspicion —
+including this project's own earlier README, which did exactly that on the strength of
+a constant that supplied 99.5% of its own headline.
+
+---
+
+## The benchmark harness
+
+`bench/` is the reusable part.
+
+- **Cache-aware billing.** Reads Claude Code's session transcripts and bills each token
+  class at its real rate. Validated to six decimal places against the CLI's own cost
+  accounting.
+- **Delivery verification.** Confirms a tool's treatment actually reached the model
+  before comparing anything, and prints `INVALID` when it did not. This caught three
+  runs that reported a clean "no significant difference" for a feature that had never
+  run at all.
+- **Paired statistics.** Replicates paired by task, 95% intervals, and an explicit
+  "no significant difference" verdict. A single run can never produce a headline.
+- **Confound controls.** A discarded warm-up per task and rotated arm order, because
+  cold-versus-warm cache ordering was measured at 8× on a trivial task — larger than
+  any effect being looked for.
+
+```bash
+python -m bench.run_memory_bench --replicates 3
+python -m bench.run_repomap_bench --replicates 3
+python -m bench.run_position_bench --replicates 3
+python -m bench.run_crosstool_bench --replicates 4   # ContextMesh vs Headroom
+```
+
+Nine results were rejected by these checks before they could become claims, including
+an 88% "win" that was entirely cache ordering, and two comparisons whose control arm
+was silently receiving the treatment.
 
 ---
 
 ## Install
 
+Still works, if you want it. Memory is on, the repo map is off.
+
 ```bash
 pipx install claude-contextmesh
-contextmesh init          # registers hooks in ~/.claude/settings.json
+contextmesh init
+cd your-project && contextmesh index .
 ```
-
-Then index a project once so the RepoMap and memory have something to work with:
-
-```bash
-cd your-project
-contextmesh index .
-```
-
-Use `claude` normally. Memory accumulates as you work.
-
-Optional — a file watcher that keeps the RepoMap current, plus a dashboard:
-
-```bash
-contextmesh start &
-contextmesh dashboard
-```
-
----
-
-## Commands
-
-```bash
-contextmesh init            # one-time global setup
-contextmesh index .         # index the current project
-contextmesh status          # check hooks are active
-contextmesh stats           # measured token savings on tool output
-contextmesh recall          # show what memory would be injected here
-contextmesh harvest <file>  # backfill memory from an old transcript
-contextmesh uninstall       # remove all integrations
-```
-
----
-
-## How it works
-
-Three hooks, one binary:
-
-```
-UserPromptSubmit  ── first prompt only ──► inject RepoMap + recalled memory
-PreToolUse        ── Bash commands ──────► capture output, summarise if large
-SessionEnd        ── session finished ───► harvest transcript into the graph
-```
-
-Memory is injected **once per session**, not per prompt. Injecting every turn
-appends a fresh block each time, and the compounding cost exceeds anything
-recall saves.
-
-Harvesting is deterministic and reads only the local transcript — no model
-call, so it costs nothing and cannot fail on an expired login. That limits it
-to what is observable: goals, file modifications, errors, commits, test runs.
-Decisions and hypotheses need a model pass and are deliberately not guessed at.
-
-Errors on files that were never subsequently fixed become `UNRESOLVED_ISSUE`
-nodes. That is the dead-end signal, and it is the thing a compression tool
-structurally cannot offer: your next session is told what already failed.
-
----
-
-## Configuration
-
-`~/.contextmesh/config.toml`:
-
-```toml
-[tracker]
-input_price_per_mtok = 5.0
-```
-
-Environment variables:
 
 | Variable | Effect |
 |---|---|
-| `CONTEXTMESH_DISABLE=1` | Makes every hook inert without uninstalling |
-| `CONTEXTMESH_TIMEOUT` | Command timeout in seconds (default 1800; `0` disables) |
-| `CONTEXTMESH_DATA_DIR` | Override the database location |
+| `CONTEXTMESH_DISABLE=1` | Makes every hook inert |
 | `CONTEXTMESH_REPOMAP=1` | Opt into RepoMap injection (off by default) |
 | `CONTEXTMESH_NO_MEMORY=1` | Disable memory recall |
+| `CONTEXTMESH_TIMEOUT` | Command timeout, seconds (default 1800; `0` disables) |
+| `CONTEXTMESH_DATA_DIR` | Override the database location |
+
+**Known bug, unfixed:** `contextmesh uninstall` reports success while leaving the
+`UserPromptSubmit` and `SessionEnd` hooks in `~/.claude/settings.json`. It only clears
+`PreToolUse`. Remove them by hand, or the memory injection keeps running after you
+believe you have removed it.
 
 ---
 
-## Benchmarking it yourself
+## What would be worth trying next
 
-```bash
-python -m bench.run_memory_bench --replicates 3
-python -m bench.run_repomap_bench --replicates 3
-```
+Not planned, but these are the open threads, in order of promise:
 
-The harness verifies its own treatment was delivered and prints `INVALID` if
-not — it caught two runs that reported a clean "no significant difference" for
-a feature that had never actually run. It also reports "no significant
-difference" whenever the confidence interval spans zero, so a single run can
-never produce a headline.
+1. **Prefix stabilisation.** The injected block changes every session as memory
+   accumulates, so it can never inherit a warm cache. TokenPilot's canonicalisation
+   approach — a byte-identical prefix across sessions — was never tested here and is
+   the most likely path to making injection affordable.
+2. **Relevance gating with real embeddings.** The blocker was believed to be a 28s
+   `sentence-transformers` import. Headroom does the same job at <50ms with local
+   embeddings, so that was an implementation problem, not a constraint.
+3. **Delivery verification as a standalone idea.** No other tool in this category
+   appears to check that its own treatment was applied.
 
 ---
 
-## Limitations
+## Limitations of everything above
 
-- Significant result rests on n=6 paired runs. Real, but barely clear of zero.
-- Benchmark tasks are authored in-house; the control task is the only guard
-  against that bias.
-- Relevance gating is implemented but disabled — no cheap signal separates
-  relevant from irrelevant memory, and embeddings cost 28s to import in a hook.
-- Extraction misses decisions and reasoning, by design.
+- Small samples. The clean memory result is n=6; the cross-tool run is n=12. Real, but
+  not large.
+- Benchmark tasks were authored in-house. The control tasks are the only guard against
+  that, and they did their job — 0.00 turn change, twice.
+- One machine, one model, one client. Nothing here is established as vendor-general.
+- The Headroom comparison is **void**: its `--no-optimize` control mode still compacts
+  tool schemas, so both arms compressed. Reported upstream. Nothing in this repo
+  should be read as a measurement of Headroom.
 
 ---
 
