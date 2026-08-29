@@ -133,10 +133,12 @@ cd your-project && contextmesh index .
 | `CONTEXTMESH_TIMEOUT` | Command timeout, seconds (default 1800; `0` disables) |
 | `CONTEXTMESH_DATA_DIR` | Override the database location |
 
-**Known bug, unfixed:** `contextmesh uninstall` reports success while leaving the
-`UserPromptSubmit` and `SessionEnd` hooks in `~/.claude/settings.json`. It only clears
-`PreToolUse`. Remove them by hand, or the memory injection keeps running after you
-believe you have removed it.
+`contextmesh uninstall` removes every hook it finds. If you installed **0.10.0**,
+that version's uninstall swept only `PreToolUse`/`PostToolUse` and reported success
+while leaving `UserPromptSubmit` and `SessionEnd` behind — memory injection kept
+running after you believed it was gone. Fixed in 0.10.1; upgrade before uninstalling,
+or remove any entry whose command contains `contextmesh` from
+`~/.claude/settings.json` by hand.
 
 ---
 

@@ -167,24 +167,81 @@ def inject_claude_hooks() -> None:
         console.print("  [dim]Claude Code hooks already installed[/dim]")
 
 
+def is_contextmesh_hook(hook: dict) -> bool:
+    return "contextmesh" in (hook.get("command") or "")
+
+
 def remove_claude_hooks() -> None:
-    """Remove ContextMesh hooks from ~/.claude/settings.json."""
+    """Remove every ContextMesh hook from ~/.claude/settings.json.
+
+    Three defects fixed here, all of which shipped in 0.10.0:
+
+    1. The event list was hardcoded to PreToolUse/PostToolUse, so the
+       UserPromptSubmit and SessionEnd hooks added alongside memory were left
+       behind while uninstall reported success. Users who removed ContextMesh
+       kept paying for memory injection they believed was gone. Now every event
+       present in the file is swept, so a hook registered by a future version is
+       still removed by an older uninstall.
+    2. Filtering happened at the entry level: an entry containing a ContextMesh
+       hook was dropped whole, taking any co-located third-party hook with it.
+       Filtering is now per hook, and an entry is dropped only once it is empty.
+    3. Success was reported unconditionally, including when nothing matched and
+       when the file could not be parsed.
+    """
     settings_path = _get_claude_settings_path()
     if not settings_path.exists():
+        console.print("  [dim]No ~/.claude/settings.json — nothing to remove[/dim]")
         return
 
-    data = json.loads(settings_path.read_text())
-    hooks = data.get("hooks", {})
+    try:
+        data = json.loads(settings_path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        console.print(
+            f"  [red]![/red] Could not read {settings_path}: {exc}\n"
+            f"      Leaving it untouched. Remove entries whose command contains "
+            f"'contextmesh' by hand."
+        )
+        return
 
-    for event in ["PreToolUse", "PostToolUse"]:
-        event_list = hooks.get(event, [])
-        hooks[event] = [
-            entry for entry in event_list
-            if not any("contextmesh" in h.get("command", "") for h in entry.get("hooks", []))
-        ]
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        console.print("  [dim]No hooks configured — nothing to remove[/dim]")
+        return
+
+    removed = 0
+    for event, entries in list(hooks.items()):
+        if not isinstance(entries, list):
+            continue
+        kept_entries = []
+        for entry in entries:
+            entry_hooks = entry.get("hooks", []) if isinstance(entry, dict) else []
+            kept_hooks = [h for h in entry_hooks if not is_contextmesh_hook(h)]
+            removed += len(entry_hooks) - len(kept_hooks)
+            if kept_hooks:
+                entry["hooks"] = kept_hooks
+                kept_entries.append(entry)
+            elif not entry_hooks:
+                kept_entries.append(entry)  # unrelated shape, leave alone
+        hooks[event] = kept_entries
+
+    if not removed:
+        console.print("  [dim]No ContextMesh hooks found in ~/.claude/settings.json[/dim]")
+        return
+
+    # Back up before rewriting someone's editor configuration. Read from disk,
+    # not from `data`, which has already had the hooks stripped out of it.
+    backup = settings_path.with_suffix(settings_path.suffix + ".contextmesh-bak")
+    try:
+        backup.write_text(settings_path.read_text())
+    except OSError:
+        backup = None
 
     settings_path.write_text(json.dumps(data, indent=2))
-    console.print("  [green]✓[/green] Removed ContextMesh hooks from ~/.claude/settings.json")
+    suffix = f" (backup at {backup.name})" if backup else ""
+    console.print(
+        f"  [green]OK[/green] Removed {removed} ContextMesh hook(s) from "
+        f"~/.claude/settings.json{suffix}"
+    )
 
 
 # ── Persistent Proxy Service ──────────────────────────────────────────────────
