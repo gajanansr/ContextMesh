@@ -4,3 +4,16 @@ __pycache__/
 .pytest_cache/
 .contextmesh/
 
+
+# Build artifacts
+dist/
+*.egg-info/
+
+# Benchmark working files. Kept results live in bench/results/.
+*-results.json
+*-run.log
+
+# One-shot patch scripts from the 0.10.0 fixes. Their edits are committed;
+# re-running them against current source would corrupt it.
+fix_*.py
+rewrite.py
