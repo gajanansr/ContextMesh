@@ -12,6 +12,7 @@ that makes unpaired means useless at these sample sizes.
 
 from __future__ import annotations
 
+import json
 import statistics
 from dataclasses import dataclass
 
@@ -196,12 +197,48 @@ def received_marker(result: RunResult, marker: str) -> bool:
         return False
 
 
+def invoked_tool(result: RunResult, prefix: str) -> bool:
+    """Whether this run actually *called* a tool whose name starts with prefix.
+
+    `received_marker` is a substring test, and a tool's name also appears in
+    the tool definitions carried in the transcript -- so for an MCP server it
+    reports delivery for every run in which the server was merely registered.
+    The symbolgraph run passed 12/12 that way while the agent called the tool
+    exactly zero times, and the resulting comparison measured two identical
+    grep-based arms. Availability is not use.
+    """
+    path = result.transcript or find_transcript(result.session_id)
+    if not path or not path.exists():
+        return False
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        content = (entry.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "tool_use"
+                and str(block.get("name", "")).startswith(prefix)
+            ):
+                return True
+    return False
+
+
 def delivery_report(
     matrix: Matrix,
     marker: str,
     label: str,
     treatment_arm: str = "on",
     baseline_arm: str = "off",
+    detector=None,
 ) -> str:
     """Confirm the treatment reached the treatment arm and only that arm.
 
@@ -212,12 +249,13 @@ def delivery_report(
     Zero comparable runs is itself a failure. An earlier version reported 0/0
     and said nothing, which is the exact silence the check exists to break.
     """
+    detect = detector or received_marker
     lines = [f"Treatment delivery ({label} present in the session):"]
     problems = []
 
     for arm, expected in ((baseline_arm, False), (treatment_arm, True)):
         runs = [r for r in matrix.for_arm(arm) if not r.cli_error]
-        got = sum(1 for r in runs if received_marker(r, marker))
+        got = sum(1 for r in runs if detect(r, marker))
         lines.append(
             f"  {arm:<12} {got}/{len(runs)} runs received it "
             f"(expected {'all' if expected else 'none'})"

@@ -46,6 +46,9 @@ class Arm:
     env: dict[str, str] = field(default_factory=dict)
     command_prefix: tuple[str, ...] = ()
     settings: Path | None = None
+    # Extra argv appended to the `claude` invocation, e.g. --mcp-config for a
+    # tool the agent calls rather than one that injects behind its back.
+    extra_args: tuple[str, ...] = ()
     setup: str | None = None
     teardown: str | None = None
     # Executables that must be on PATH for this arm to run at all.
@@ -176,7 +179,90 @@ THIRD_PARTY_ARMS: dict[str, Arm] = {
 }
 
 
+# ── symbolgraph ─────────────────────────────────────────────────────────────
+#
+# symbolgraph is a different shape from every arm above. Headroom and RTK act
+# on the agent behind its back; ContextMesh injects on a hook. symbolgraph is
+# an MCP server the agent chooses to call, so its cost is opt-in and its
+# delivery is *visible* -- a tool call leaves `mcp__symbolgraph__` in the
+# transcript. That makes it the only third-party arm here that can be verified
+# the same way ContextMesh's own arms are.
+#
+# Both arms pass --strict-mcp-config so whatever MCP servers the operator has
+# configured globally cannot leak into either side of the comparison.
+
+def symbolgraph_arms(mcp_config: Path, sg_bin: Path | None = None) -> dict[str, Arm]:
+    """Build the pair, given a written --mcp-config file for the `on` side.
+
+    `sg_bin` enables the arm's own install step. symbolgraph's documented
+    setup is `sg init`, which writes an AGENTS.md telling the agent to "use
+    sg search / sg context / definition / callers / callees before reading
+    files". Registering the MCP server without that instruction measures a
+    tool the agent never reaches for: in the first run here the server was
+    available in all 12 treatment runs and invoked in none of them, because
+    grep was the obvious move and nothing suggested otherwise. Installing the
+    tool the way its author documents is the only fair test of it.
+    """
+    install = teardown = None
+    if sg_bin is not None:
+        # `sg init` writes AGENTS.md, .mcp.json and per-editor configs. On
+        # Claude Code the MCP entry registers the tools but the instruction
+        # never lands: Claude Code reads CLAUDE.md, and sg init does not write
+        # one. Registered-but-unmentioned, the agent greps instead -- 0
+        # invocations in 9 runs. Copying sg's own AGENTS.md text to CLAUDE.md
+        # closes that gap without inventing wording of ours, so the tool is
+        # tested as its author intends rather than as its installer leaves it.
+        install = (
+            f"{sg_bin} init --agent all >/dev/null 2>&1 || true; "
+            "[ -f AGENTS.md ] && cp AGENTS.md CLAUDE.md || true"
+        )
+        # Leave the tree as the baseline sees it, so a stray AGENTS.md cannot
+        # follow the fixture into an sg-off run.
+        teardown = (
+            "rm -rf AGENTS.md CLAUDE.md .mcp.json .cursor .vscode "
+            "opencode.json .gemini .github/copilot-instructions.md"
+        )
+    return {
+        "sg-off": Arm(
+            name="sg-off",
+            env={"CONTEXTMESH_DISABLE": "1"},
+            extra_args=("--strict-mcp-config",),
+            delivery_marker="mcp__symbolgraph",
+            expects_marker=False,
+            # Strip any install artefacts before the baseline runs.
+            setup=(
+                "rm -rf AGENTS.md CLAUDE.md .mcp.json .cursor .vscode "
+                "opencode.json .gemini .github/copilot-instructions.md"
+            ),
+            notes=(
+                "Plain Claude Code: Read, Grep and Glob only, and no AGENTS.md. "
+                "The baseline symbolgraph's savings claim is implicitly "
+                "measured against."
+            ),
+        ),
+        "sg-on": Arm(
+            name="sg-on",
+            env={"CONTEXTMESH_DISABLE": "1"},
+            extra_args=("--strict-mcp-config", "--mcp-config", str(mcp_config)),
+            delivery_marker="mcp__symbolgraph",
+            setup=install,
+            teardown=teardown,
+            notes=(
+                "Same agent with the symbolgraph MCP server available. The "
+                "agent still has Read and Grep -- withholding them would test "
+                "a tool nobody uses that way, and would hide the failure mode "
+                "that matters: falling back to a full read after a pack that "
+                "did not answer the question."
+            ),
+        ),
+    }
+
+
 ALL_ARMS: dict[str, Arm] = {**CONTEXTMESH_ARMS, **THIRD_PARTY_ARMS}
+
+
+# Registration lives in bench.runner (register_arms), which owns both the
+# spec table and the env-only view run_once validates against.
 
 
 def resolve(name: str) -> Arm:
