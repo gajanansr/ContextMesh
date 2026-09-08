@@ -9,7 +9,11 @@ import importlib
 
 import pytest
 
-DRIVERS = ("bench.run_memory_bench", "bench.run_repomap_bench")
+DRIVERS = (
+    "bench.run_memory_bench",
+    "bench.run_repomap_bench",
+    "bench.run_symbolgraph_bench",
+)
 
 
 @pytest.mark.parametrize("module", DRIVERS)
@@ -159,3 +163,41 @@ def test_unknown_arm_is_rejected():
 
     with pytest.raises(ValueError, match="unknown arm"):
         resolve("nonexistent")
+
+
+def test_register_arms_updates_both_arm_tables(tmp_path):
+    """Registering a runtime arm must reach ARMS, not just ARM_SPECS.
+
+    Two tables have to agree: ARM_SPECS holds the full spec, ARMS the env-only
+    view run_once validates against. Updating only the first left run_once
+    raising `unknown arm 'sg-off'` -- after the run had already cloned and
+    embedded its fixture, so the failure cost several minutes to discover.
+    """
+    from bench.arms import symbolgraph_arms
+    from bench.runner import ARMS, ARM_SPECS, register_arms
+
+    register_arms(symbolgraph_arms(tmp_path / "mcp.json"))
+
+    for arm in ("sg-off", "sg-on"):
+        assert arm in ARM_SPECS, f"{arm} missing from ARM_SPECS"
+        assert arm in ARMS, f"{arm} missing from ARMS -- run_once would reject it"
+
+
+def test_symbolgraph_arms_differ_only_by_the_mcp_server(tmp_path):
+    """The pairing is only honest if the server is the single variable."""
+    from bench.arms import symbolgraph_arms
+
+    arms = symbolgraph_arms(tmp_path / "mcp.json")
+    off, on = arms["sg-off"], arms["sg-on"]
+
+    # ContextMesh inert on both, so it cannot contaminate either side.
+    assert off.env["CONTEXTMESH_DISABLE"] == on.env["CONTEXTMESH_DISABLE"] == "1"
+    # Both isolated from whatever MCP servers the operator has configured.
+    assert "--strict-mcp-config" in off.extra_args
+    assert "--strict-mcp-config" in on.extra_args
+    # Only the treatment gets symbolgraph.
+    assert "--mcp-config" in on.extra_args
+    assert "--mcp-config" not in off.extra_args
+    # Delivery is checkable on both, and expected on exactly one.
+    assert off.delivery_marker == on.delivery_marker == "mcp__symbolgraph"
+    assert on.expects_marker and not off.expects_marker

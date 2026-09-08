@@ -47,9 +47,23 @@ ARMS: dict[str, dict[str, str]] = {
 # ARMS above stays the env-only view so existing callers keep working; this
 # adds wrapper argv, per-arm settings files, and setup/teardown.
 from bench.arms import ALL_ARMS as ARM_SPECS  # noqa: E402
+from bench.arms import run_arm_hook  # noqa: E402
 
 for _name, _spec in ARM_SPECS.items():
     ARMS.setdefault(_name, dict(_spec.env))
+
+
+def register_arms(specs: dict) -> None:
+    """Register arms built at runtime, e.g. ones needing a generated config path.
+
+    Two tables have to agree: ARM_SPECS carries the full spec and ARMS the
+    env-only view run_once validates against. Updating only the first leaves
+    run_once rejecting the arm as unknown, which is exactly how the first
+    symbolgraph run died after paying for its fixture.
+    """
+    ARM_SPECS.update(specs)
+    for name, spec in specs.items():
+        ARMS[name] = dict(spec.env)
 
 
 @dataclass(frozen=True)
@@ -170,12 +184,31 @@ def preflight_arms(cwd: Path | None = None) -> list[str]:
 
 
 def find_transcript(session_id: str, config_dir: Path | None = None) -> Path | None:
-    """Locate a session transcript by id."""
+    """Locate a session transcript by id.
+
+    Claude Code writes transcripts under CLAUDE_CONFIG_DIR when that is set,
+    and only falls back to ~/.claude when it is not. Hardcoding ~/.claude
+    silently returns None on any machine using a custom config dir, and a
+    missing transcript is not a loud failure -- it zeroes `cost_usd` and
+    `billed_input_equivalent` while `verified` and `turns` still populate from
+    the CLI payload, so a whole run reports a confident 0.0000 delta. That is
+    exactly what the first completed symbolgraph run did.
+    """
     if not session_id:
         return None
-    root = config_dir or (Path.home() / ".claude")
-    matches = sorted(root.glob(f"projects/*/{session_id}.jsonl"))
-    return matches[0] if matches else None
+    if config_dir is not None:
+        roots = [config_dir]
+    else:
+        roots = []
+        env_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+        if env_dir:
+            roots.append(Path(env_dir).expanduser())
+        roots.append(Path.home() / ".claude")
+    for root in roots:
+        matches = sorted(root.glob(f"projects/*/{session_id}.jsonl"))
+        if matches:
+            return matches[0]
+    return None
 
 
 def _shell(command: str, cwd: Path, timeout: int, extra_env: dict | None = None) -> tuple[int, str]:
@@ -207,6 +240,15 @@ def run_once(task: Task, arm: str, replicate: int, model: str | None = None) -> 
 
     arm_spec = ARM_SPECS.get(arm)
 
+    # An arm may need its own per-run setup -- installing a tool's config
+    # files, say. Arm has declared setup/teardown since the cross-tool work;
+    # run_once ignoring them meant an arm could silently run un-installed.
+    if arm_spec and arm_spec.setup:
+        code, out = run_arm_hook(arm_spec.setup, task.repo)
+        if code != 0:
+            result.error = f"arm setup failed ({code}): {out[-300:]}"
+            return result
+
     env = dict(os.environ)
     env.update(task.env)
     env.update(ARMS[arm])
@@ -225,6 +267,9 @@ def run_once(task: Task, arm: str, replicate: int, model: str | None = None) -> 
         cmd += ["--settings", str(settings)]
     if model:
         cmd += ["--model", model]
+
+    if arm_spec and arm_spec.extra_args:
+        cmd += list(arm_spec.extra_args)
 
     # Wrapper argv, e.g. ("headroom", "wrap") -> `headroom wrap claude -p ...`
     if arm_spec and arm_spec.command_prefix:
@@ -266,6 +311,9 @@ def run_once(task: Task, arm: str, replicate: int, model: str | None = None) -> 
         result.verified = code == 0
         if code != 0 and not result.error:
             result.error = f"verify failed ({code}): {out[-200:]}"
+
+    if arm_spec and arm_spec.teardown:
+        run_arm_hook(arm_spec.teardown, task.repo)
 
     return result
 
@@ -345,7 +393,14 @@ def run_matrix(
 
     for task in tasks:
         if warmup:
-            run_once(task, arms[0], replicate=-1, model=model)
+            # Every arm, not just the first. An arm that changes the system
+            # prefix -- an MCP server's tool schemas, say -- cannot reuse
+            # another arm's cache entry, so warming only arms[0] leaves every
+            # other arm paying a cold cache write on its first run. At 2.0x
+            # write pricing that landed as a ~4,100-token penalty per task in
+            # the symbolgraph run, charged entirely to the treatment.
+            for arm in arms:
+                run_once(task, arm, replicate=-1, model=model)
 
         for replicate in range(replicates):
             shift = replicate % len(arms)

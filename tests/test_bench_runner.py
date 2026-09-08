@@ -198,3 +198,67 @@ def test_matrix_serializes(task):
     m = Matrix()
     m.add(runner.RunResult(task_id="t", arm="on", replicate=0))
     assert json.loads(m.to_json())[0]["arm"] == "on"
+
+
+def test_find_transcript_honours_claude_config_dir(tmp_path, monkeypatch):
+    """A custom CLAUDE_CONFIG_DIR must not zero out every measurement.
+
+    When the transcript is not found, `verified` and `turns` still populate
+    from the CLI payload while cost and billed tokens fall to 0.0 -- so the
+    run looks successful and reports a confident null. Found by running the
+    symbolgraph benchmark on a machine using ~/.claude-g.
+    """
+    from bench.runner import find_transcript
+
+    session = "abc12345-0000-0000-0000-000000000000"
+    config_dir = tmp_path / ".claude-alt"
+    project = config_dir / "projects" / "-some-project"
+    project.mkdir(parents=True)
+    transcript = project / f"{session}.jsonl"
+    transcript.write_text("{}\n")
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path / "nowhere"))
+
+    assert find_transcript(session) == transcript
+
+
+def test_find_transcript_falls_back_to_home_without_env(tmp_path, monkeypatch):
+    from bench.runner import find_transcript
+
+    session = "def67890-0000-0000-0000-000000000000"
+    home = tmp_path / "home"
+    project = home / ".claude" / "projects" / "-some-project"
+    project.mkdir(parents=True)
+    transcript = project / f"{session}.jsonl"
+    transcript.write_text("{}\n")
+
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
+
+    assert find_transcript(session) == transcript
+
+
+def test_warmup_covers_every_arm(monkeypatch, tmp_path):
+    """Each arm needs its own warm-up when arms differ in the system prefix.
+
+    An MCP server's tool schemas change the cached prefix, so an arm that was
+    never warmed pays a cold cache write on its first real run while the
+    warmed arm does not -- a systematic penalty charged to whichever arm was
+    not arms[0].
+    """
+    from bench import runner
+
+    calls = []
+
+    def fake_run_once(task, arm, replicate, model=None):
+        calls.append((task.task_id, arm, replicate))
+        return runner.RunResult(task_id=task.task_id, arm=arm, replicate=replicate)
+
+    monkeypatch.setattr(runner, "run_once", fake_run_once)
+
+    task = runner.Task(task_id="t", prompt="p", repo=tmp_path)
+    runner.run_matrix([task], replicates=1, arms=["a", "b"], warmup=True)
+
+    warmups = {arm for _, arm, rep in calls if rep == -1}
+    assert warmups == {"a", "b"}, f"only warmed {warmups}"
